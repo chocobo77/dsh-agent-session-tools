@@ -1,0 +1,12 @@
+# Development composition — mount the tools without packaging them.
+#
+# `dsh` loads the built module straight from this directory, so a change is
+# live after `apply` re-runs (plugin restart) with no bundle install:
+#   dsh --profile <profile> --patch ./cordis.yml
+# The build shim (`scripts/build.mjs`) links the @deepseek-ai packages into
+# this directory's node_modules, so `./dist/index.js` resolves them at runtime
+# even though this checkout is not inside a profile. Point the row at
+# ./src/index.ts instead if your loader runs TypeScript sources.
+
+- id: agent-session-tools
+  name: ./dist/index.js

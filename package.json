@@ -1,0 +1,57 @@
+{
+  "name": "dsh-agent-session-tools",
+  "description": "session_create and session_inject agent tools over the Host Session Controller. / 基于宿主 Session Controller 的 session_create 与 session_inject 工具。",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./session-tools": {
+      "types": "./dist/session-tools.d.ts",
+      "default": "./dist/session-tools.js"
+    },
+    "./checks": {
+      "types": "./dist/checks.d.ts",
+      "default": "./dist/checks.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml",
+    "cordis.yml",
+    "README.md",
+    "LICENSE",
+    "locale/*.json",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs tsconfig.build.json",
+    "typecheck": "node scripts/build.mjs tsconfig.typecheck.json",
+    "prepack": "npm run build",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "workspace:~",
+    "@deepseek-ai/dsh-api-session-controller": "workspace:~",
+    "@deepseek-ai/dsh-llm": "workspace:~",
+    "@deepseek-ai/dsh-session": "workspace:~",
+    "@deepseek-ai/dsh-tools": "workspace:~"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "license": "MIT"
+}

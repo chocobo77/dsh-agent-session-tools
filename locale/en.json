@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session create and inject tools",
+    "description": "Adds the session_create and session_inject agent tools: start a Session in a chosen directory (it copies the calling session's model and reasoning effort unless told otherwise), and deliver a real user message to an existing Session in queue or steer mode."
+  }
+}

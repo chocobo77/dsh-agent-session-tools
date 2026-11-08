@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "会话创建与注入工具",
+    "description": "为 Agent 增加 session_create 与 session_inject 两个工具：在指定目录新建会话（默认沿用当前会话的模型与思考强度，也可指定），并以 queue 或 steer 模式向已有会话投递一条真实用户消息。"
+  }
+}

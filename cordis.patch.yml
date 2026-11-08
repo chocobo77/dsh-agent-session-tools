@@ -1,0 +1,3 @@
+- insert:
+    - id: agent-session-tools
+      name: dsh-agent-session-tools
