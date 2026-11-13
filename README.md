@@ -322,6 +322,14 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
 
 ## 安装
 
+正式安装走 Release 资产（地址不带版本号，永远是最新一版）：
+
+```sh
+dsh plugin --profile <profile> add https://github.com/chocobo77/dsh-agent-session-tools/releases/latest/download/dsh-agent-session-tools.tgz
+```
+
+本机打包安装：
+
 ```sh
 dsh plugin --profile <test-profile> remove dsh-agent-session-tools   # 首次安装可跳过
 dsh plugin --profile <test-profile> add <release/dsh-agent-session-tools-<version>.tgz>
