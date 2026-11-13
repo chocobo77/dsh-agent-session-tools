@@ -19,11 +19,13 @@ function makeContext(options: {
   selectModel?: (request: any) => Promise<any>
   prompt?: (request: any, signal: AbortSignal) => Promise<any>
   catalog?: any
+  workspaces?: { id: string; title: string; path: string; sessionIds: string[] }[]
 } = {}): { ctx: Context; registered: ToolDefinition[]; live: Map<string, ToolDefinition>; recorded: Recorded; disposers: (() => void)[] } {
   const registered: ToolDefinition[] = []
   const live = new Map<string, ToolDefinition>()
   const recorded: Recorded = { create: [], selectModel: [], prompt: [] }
   const disposers: (() => void)[] = []
+  const workspaces = options.workspaces ?? []
   const ctx = {
     // A minimal fiber: run the effect body at once and keep its disposer.
     effect: (execute: () => () => void) => {
@@ -55,6 +57,11 @@ function makeContext(options: {
         recorded.prompt.push({ request, signal })
         return options.prompt === undefined ? { accepted: true } : options.prompt(request, signal)
       },
+    },
+    workspaceRegistry: {
+      list: () => workspaces,
+      get: (id: string) => workspaces.find(workspace => workspace.id === id),
+      resolveByPath: async (path: string) => workspaces.find(workspace => workspace.path === path),
     },
   }
   return { ctx: ctx as unknown as Context, registered, live, recorded, disposers }
@@ -94,16 +101,16 @@ afterEach(() => {
 })
 
 describe('apply', () => {
-  it('registers exactly the two Session tools', () => {
+  it('registers the two Session tools and the error audit', () => {
     const { ctx, registered } = makeContext()
     apply(ctx)
-    expect(registered.map(definition => definition.name)).toEqual(['session_create', 'session_inject'])
+    expect(registered.map(definition => definition.name)).toEqual(['session_create', 'session_inject', 'session_error_audit'])
   })
 
-  it('gives the fiber a disposer that takes both registrations back', () => {
+  it('gives the fiber a disposer that takes every registration back', () => {
     const { ctx, live, disposers } = makeContext()
     apply(ctx)
-    expect([...live.keys()]).toEqual(['session_create', 'session_inject'])
+    expect([...live.keys()]).toEqual(['session_create', 'session_inject', 'session_error_audit'])
     for (const dispose of disposers) dispose()
     expect(live.size).toBe(0)
   })
@@ -131,6 +138,74 @@ describe('session_create', () => {
     apply(ctx)
     const value = await toolOf(registered, 'session_create').execute({ agentPreset: 'cordis' }, execOf(new AbortController().signal))
     expect(value).toEqual({ sessionId: 'session-created-1', agentPreset: 'cordis' })
+  })
+
+  it('joins the Workspace the calling session belongs to when no location is given', async () => {
+    const { ctx, registered, recorded } = makeContext({
+      workspaces: [{ id: 'ws-1', title: 'DSH', path: 'D:\\code\\DSH', sessionIds: ['session-current'] }],
+    })
+    apply(ctx)
+    const value = await toolOf(registered, 'session_create').execute({}, execWithAgent(new AbortController().signal, undefined))
+    expect(recorded.create).toEqual([{ workspaceId: 'ws-1' }])
+    expect(value).toEqual({ sessionId: 'session-created-1', workspaceId: 'ws-1', workspaceTitle: 'DSH', cwd: 'D:\\code\\DSH' })
+  })
+
+  it('asks for no location at all when the calling session is in no Workspace', async () => {
+    const { ctx, registered, recorded } = makeContext({ workspaces: [] })
+    apply(ctx)
+    const value = await toolOf(registered, 'session_create').execute({}, execWithAgent(new AbortController().signal, undefined))
+    expect(recorded.create).toEqual([{}])
+    expect(value).toEqual({ sessionId: 'session-created-1' })
+  })
+
+  it('attaches a named cwd to the Workspace registered for that directory', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ast-ws-'))
+    try {
+      const { ctx, registered, recorded } = makeContext({
+        workspaces: [{ id: 'ws-2', title: 'tmp', path: dir, sessionIds: [] }],
+      })
+      apply(ctx)
+      const value = await toolOf(registered, 'session_create').execute({ cwd: dir }, execOf(new AbortController().signal))
+      expect(recorded.create).toEqual([{ workspaceId: 'ws-2' }])
+      expect(value.workspaceId).toBe('ws-2')
+      expect(value.cwd).toBe(dir)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a cwd no Workspace owns as a plain cwd instead of inventing a Workspace', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ast-plain-'))
+    try {
+      const { ctx, registered, recorded } = makeContext({ workspaces: [] })
+      apply(ctx)
+      const value = await toolOf(registered, 'session_create').execute({ cwd: dir }, execOf(new AbortController().signal))
+      expect(recorded.create).toEqual([{ cwd: dir }])
+      expect(value.cwd).toBe(dir)
+      expect(value.workspaceId).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('passes an explicit workspaceId straight through', async () => {
+    const { ctx, registered, recorded } = makeContext({
+      workspaces: [{ id: 'ws-9', title: 'Nine', path: 'D:\\named', sessionIds: [] }],
+    })
+    apply(ctx)
+    const value = await toolOf(registered, 'session_create').execute({ workspaceId: 'ws-9' }, execOf(new AbortController().signal))
+    expect(recorded.create).toEqual([{ workspaceId: 'ws-9' }])
+    expect(value).toEqual({ sessionId: 'session-created-1', workspaceId: 'ws-9', workspaceTitle: 'Nine', cwd: 'D:\\named' })
+  })
+
+  it('refuses cwd together with workspaceId before the Host is asked', async () => {
+    const { ctx, registered, recorded } = makeContext()
+    apply(ctx)
+    await expect(toolOf(registered, 'session_create').execute(
+      { cwd: 'D:\\code\\DSH', workspaceId: 'ws-1' },
+      execOf(new AbortController().signal),
+    )).rejects.toThrow('session_create: pass workspaceId or cwd, not both')
+    expect(recorded.create).toEqual([])
   })
 
   it('rejects a relative cwd before the Host is asked', async () => {
@@ -407,21 +482,29 @@ describe('session_create', () => {
     expect(recorded.create).toEqual([{}])
   })
 
-  it('renders one compact line for the model', async () => {
+  it('renders one compact line naming the Workspace or its absence', async () => {
     const { ctx, registered } = makeContext()
     apply(ctx)
     const tool = toolOf(registered, 'session_create')
     expect(tool.output.render({}, { sessionId: 'session-created-1' })).toEqual([
-      { type: 'text', text: 'session created: session-created-1 (cwd: default)' },
+      { type: 'text', text: 'session created: session-created-1 (cwd: default, ungrouped)' },
     ])
     expect(tool.output.render({}, { sessionId: 'session-created-1', cwd: scratch, agentPreset: 'cordis' })).toEqual([
-      { type: 'text', text: `session created: session-created-1 (cwd: ${scratch}) (preset: cordis)` },
+      { type: 'text', text: `session created: session-created-1 (cwd: ${scratch}, ungrouped) (preset: cordis)` },
     ])
-    expect(tool.output.render({}, { sessionId: 'session-created-1', provider: 'prov-a', model: 'm1', reasoningEffort: 'high' })).toEqual([
-      { type: 'text', text: 'session created: session-created-1 (cwd: default) (model: prov-a/m1, effort: high)' },
+    expect(tool.output.render({}, {
+      sessionId: 'session-created-1',
+      workspaceId: 'ws-1',
+      workspaceTitle: 'DSH',
+      cwd: 'D:\\code\\DSH',
+      provider: 'prov-a',
+      model: 'm1',
+      reasoningEffort: 'high',
+    })).toEqual([
+      { type: 'text', text: 'session created: session-created-1 (workspace: DSH, cwd: D:\\code\\DSH) (model: prov-a/m1, effort: high)' },
     ])
     expect(tool.output.render({}, { sessionId: 'session-created-1', provider: 'prov-a', model: 'm1' })).toEqual([
-      { type: 'text', text: 'session created: session-created-1 (cwd: default) (model: prov-a/m1)' },
+      { type: 'text', text: 'session created: session-created-1 (cwd: default, ungrouped) (model: prov-a/m1)' },
     ])
   })
 })

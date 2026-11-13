@@ -1,13 +1,17 @@
 # dsh-agent-session-tools
 
-Host-only DSH 工具插件，向 Agent 暴露两个工具：
+Host-only DSH 工具插件，向 Agent 暴露三个工具：
 
-- `session_create`：新建会话，可指定绝对路径 `cwd`；默认沿用当前会话的模型与思考强度
-  （`model` / `provider` / `reasoningEffort` 可覆盖，v1.2.0 起）。
+- `session_create`：新建会话，可指定绝对路径 `cwd` 或 `workspaceId`；不带位置参数时**沿用当前会话所属的
+  Workspace**（v1.3.0 起，所以新会话会出现在同一个分组里，而不是掉进“未分类”）。默认沿用当前会话的模型
+  与思考强度（`model` / `provider` / `reasoningEffort` 可覆盖，v1.2.0 起）。
 - `session_inject`：向指定会话投递一条真实用户消息，支持 `queue` / `steer`。
+- `session_error_audit`（v1.4.0 起，只读）：扫描本地会话日志（`~/.dsh/sessions`）里的工具调用错误，
+  返回**有界**摘要（类别计数、错误最多的会话、最常被点名的文件/命令，约 40 行）；细节留在磁盘上，
+  要看具体会话用 `read` 分页。
 
-不注册 `session_list`、`session_cancel` 等其他工具。插件本身不实现会话逻辑，只调用宿主
-`ctx.sessionController`（`@deepseek-ai/dsh-api-session-controller`）。
+不注册 `session_list`、`session_cancel` 之类的其他会话操作。插件本身不实现会话逻辑，只调用宿主
+`ctx.sessionController`（`@deepseek-ai/dsh-api-session-controller`）；审计工具只读文件，不碰宿主状态。
 
 ## 目录结构
 
@@ -25,10 +29,16 @@ dsh-agent-session-tools/
   icon.svg
   locale/en.json, zh.json  Plugin Manager 标题/描述
   src/index.ts             插件入口：name / inject / apply
-  src/session-tools.ts     两个工具的 defineTool 定义与 execute（含模型选择解析）
-  src/checks.ts            纯函数：cwd 校验、空文本判定、失败包装、模型/思考强度解析
+  src/session-tools.ts     两个会话工具的 defineTool 定义与 execute（含模型选择解析）
+  src/error-audit.ts       session_error_audit：日志扫描、错误分类、有界摘要
+  src/checks.ts            纯函数：cwd 校验、空文本判定、失败包装、模型/思考强度解析、
+                           重试账本（lookupRetry / rememberRetry）、Workspace 归属查找
   tests/checks.test.ts
   tests/session-tools.test.ts
+  tests/error-audit.test.ts
+  docs/wiki/               Code Wiki：概览 / 架构（mermaid）/ 模块 / 关键函数 /
+                           工具契约 / 依赖 / 构建运行，共 8 页
+  docs/GITHUB-PUSH-PIPELINE.md  本仓库沿用的 GitHub 推送链路（含 api.github.com 回退路径）
   scripts/build.mjs        tsc 运行器 + node_modules 垫片（借用宿主类型）
   tsconfig.json            → extends tsconfig.typecheck.json
   tsconfig.typecheck.json  严格类型检查（noEmit）
@@ -183,16 +193,30 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
    取自入参），并在 canonical 中只声明这四个字段。
 4. `mode` 与 `requestId` 在本地类型里都是**必填**字段（文档称 mode 可选、requestId 可选）；
    插件侧 `mode` 参数仍是可选并默认 `'queue'`，在调用前补全，不影响宿主契约。
-5. `create` 的 `cwd` 与 `workspaceId` 互斥（文档未提）。本插件不暴露 `workspaceId`，
-   因此不会触发该冲突；`agentPreset` 已确认可靠透传，故一并暴露。
-6. `SessionCreateValue` 不返回 `cwd`，因此 `cwd` 只能回显调用方给定值；
-   省略 `cwd` 时渲染为 `cwd: default`（真实默认由宿主决定）。
+5. `create` 的 `cwd` 与 `workspaceId` 互斥（文档未提，`commands.ts:121-122` 直接拒
+   `gateway/bad-request`）。v1.3.0 起两个都暴露，并在插件侧先拒同给，错误更直白。
+6. `SessionCreateValue` 不返回 `cwd`，因此 joined 时回显 Workspace 的 `path`（那正是宿主用的 cwd），
+   未 join 又给了 `cwd` 时回显调用方给定值，两者都没有时渲染 `cwd: default`（真实默认由宿主决定）。
 
 ## 工具语义
 
 - `session_create`
   - `cwd` 可选，给了就必须是**绝对路径**且当前可访问（`node:path` 的 `isAbsolute` 按宿主平台判定；
     相对路径、不存在的目录、非目录都直接拒，不猜基准目录）。
+  - **落在哪个分组（v1.3.0）**：宿主 `create` 只接受 `workspaceId` **或** `cwd`，而且**只有
+    `workspaceId` 会把会话挂到 Workspace 上**（`commands.ts:133` 用 `workspace.path` 当 cwd，
+    `:147-157` 才 `attachSession`）。只给 `cwd` 建出来的会话不属于任何 Workspace，UI 就把它排在
+    所有分组之外（“未分类”）。所以插件按这个顺序决定位置（`joinTarget`）：
+    1. 显式 `workspaceId` → 直接透传（宿主校验，未知 id 报 `workspace/not-found`）；
+    2. 显式 `cwd` → `workspaceRegistry.resolveByPath(cwd)`，命中就用它的 `workspaceId`（自动归组），
+       **不**替调用方新建 Workspace（那会在用户的分组列表里留下条目）；没命中就按纯 `cwd` 创建，
+       渲染里明说 `ungrouped`；
+    3. 两个都没给 → 用 `exec.agent.id` 在 `workspaceRegistry.list()` 里找**当前会话所属的
+       Workspace**，用它的 id（于是新会话和当前会话在同一组，目录也一致）；当前会话本身不在任何
+       Workspace 时什么都不传，交给宿主的默认 cwd。
+    `inject` 因此多了 `workspaceRegistry`（`@deepseek-ai/dsh-workspace`，`lib/types/index.d.ts:82`）。
+    profile 里没挂 `workspace` 行的（比如裸 `headless`）插件会因 `inject` 不满足而不激活——
+    `web` 有这一行。
   - `agentPreset` 可选，透传给宿主；preset 不存在时由宿主报错（实测 `agent-preset/not-found`，且不会留下会话）。
   - **模型与思考强度（v1.2.0）**：新建会话默认**沿用当前会话的模型与思考强度**（"同模型、同思考强度"），
     也可由调用方指定：
@@ -263,6 +287,22 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
     实测两种落点在目标会话日志里就是这两个值（`src/commands.ts:338-339`）。
     目标会话**正在跑 turn** 时：steer 在下一个 step 边界被吃进**同一个 turn**（那一轮的最终回复
     体现了注入内容，实测 `done STEER-OK`），queue 排队成**下一个 turn**（实测 `done STEER-OK QUEUE-OK`）。
+
+### `session_error_audit`（v1.4.0）
+
+只读的运维视角工具：扫 `~/.dsh/sessions` 下每个会话的 `session.v4.jsonl.zstd`，把工具调用与编辑的
+`isError` 结果归类计数，回答“哪类错误在反复发生、哪些会话/文件最招错”。
+
+- **有界输出**：类别取前 10、worst sessions 与 top offenders 各 `top` 行（默认 3，钳到 1-5），
+  整份摘要约 40 行。错误正文与文件/命令在**提取时就截断**，所以内存平坦、会话细节绝不进上下文；
+  要看某个会话用 `read` 分页读它的日志。
+- **归类词表**（`classifyErrorText`，先具体后泛化）：`edit-mismatch`（`old_string was not found`）、
+  `edit-stale`（文件被并发改过）、`edit-not-read`（改前没读）、`timeout`（执行超时）、
+  `search-bad-path`（ripgrep 路径不存在）、`syntax`、`network`、`bad-args`、`enoent`、`other`。
+  词表来自本机会话历史里真实反复出现的失败，用来验证“加了守卫之后该类错误是否下降”。
+- **参数**：`since`（ISO 8601 下界，非 ISO 直接拒）、`cwd_contains`（按会话工作目录子串过滤）、
+  `top`。损坏或读不了的日志文件**跳过而不是抛错**（`decodeSessionLines` 返回空数组）。
+- 只用 `node:fs` / `node:zlib`（原生 `zstdDecompressSync`，一次同步解出拼接帧），不碰宿主服务。
 
 ## 依赖与前置条件
 
@@ -380,5 +420,66 @@ headless 模板缺会话控制的宿主行，用 `--patch` 叠加层补上（`in
 `storages/session_projcache/sessions/<id>.json`（per-record 投影缓存，会话销毁时还会再写一次），
 日志没了条目仍在。清理要么走 Host 的移除/归档路径，要么把日志目录和这个缓存文件一起删。
 
+### 轮次 D：Workspace 归组（v1.3.0，一次性 profile 现场）
+
+起因：只给 `cwd` 的 `create` 不会把会话挂到任何 Workspace，UI 把这类会话排在所有分组之外（“未分类”）。
+下面是对着**真实** Workspace 注册表（`storages/workspace.json`，`D:\code\DSH` 的 id 为
+`b4887ea9-…`，当时 5 个会话）跑的：
+
+| 调用 | 结果 |
+|---|---|
+| `session_create {cwd: D:\code\DSH}` | `session created: session-f39deae2-… (workspace: DSH, cwd: D:\code\DSH)`；该 Workspace 账号从 5 → 7，新 id 前置 ✓ |
+| `session_create {workspaceId: b4887ea9-…}` | `… (workspace: DSH, cwd: D:\code\DSH)` ✓ |
+| `session_create {cwd, workspaceId}` | `session_create: pass workspaceId or cwd, not both`，未创建会话 ✓ |
+| `session_create {}`（headless 会话本身不属于任何 Workspace） | `… (cwd: default, ungrouped)`，没有伪造 Workspace ✓ |
+
+“沿用当前会话所属 Workspace”这条分支在 headless 里没法现场跑（那种会话本就不在任何 Workspace，
+于是走 fallback），由 `tests/session-tools.test.ts` 的
+`joins the Workspace the calling session belongs to when no location is given` 覆盖；
+重启 `web` Host 后在 GUI 会话里现场复验。
+
+删除测试会话后，该 Workspace 的**持久**账号里仍留着那两个 id：宿主读 `sessionIds` 时按会话
+header 过滤（`packages/workspace/workspace/src/types.ts:89-100`），所以 UI 不再显示它们，
+下一次该 Workspace 的写操作会把它们剪掉。
+
 验证产生的一次性 profile `ast-verify`、`verify-scratch` 与 `probe-*` 会话（含各自的
 projcache 条目）、`plugin-live-test` 会话与目录均已删除。
+
+### 轮次 E：重启 `web` Host 后的现场复验（v1.3.0）
+
+| 检查 | 结果 |
+|---|---|
+| 不带位置参数的 `session_create`（当前会话属于 `D:\code\DSH` 的 Workspace，标题 `DSH插件`） | `session created: session-4e59b295-… (workspace: DSH插件, cwd: D:\code\DSH) (preset: standard) (model: strata/iq3_s, effort: medium)`；该 Workspace 的 `sessionIds` 里新 id **前置** ✓ —— “默认落在同一个工作区”这条分支只有这种现场能验 |
+| 对新会话 `session_inject`（queue） | `splice @4 target=next-turn` → `user/message @10`（正文落盘）→ `turn/start @5` → `ASST @19` → `turn/end @21 completed`：新建的顶层会话确实能被唤醒并跑完一轮 ✓ |
+| `session_create {cwd: ./relative-dir}` | `session_create: cwd must be an absolute directory, got "./relative-dir"`，没有留下会话 ✓ |
+| 模型继承 | 同一 route 与思考强度（`strata/iq3_s` / `medium`）随 v1.2.0 的继承逻辑照常带过去 ✓ |
+
+顺带确认宿主的账号剪枝：`4e59b295` 那次 attach 顺手把之前遗留的三个失效 id（两个 headless
+测试会话 + 另一个）从**持久**账号里剪掉了。删会话文件本身不触发账号变更，所以被删会话的 id 会
+留在 `sessionIds` 里，直到下一次该 Workspace 的写操作（读时按 header 过滤，UI 不显示）。
+要立刻干净就走 GUI 的删除/归档 —— 那是宿主自己的移除路径，会顺带 detach。
+
+**补一条同批次的教训**：那次删完文件后用户在 GUI 里**仍然看得见**该会话。原因是它当时在这个 Host
+进程里还**活着**（被 `session_inject` 唤醒过、从未 dispose），列表对活会话走宿主 feed，再加上页面
+自己也持有已打开过的会话对象 —— 所以在进程底下删文件不会把它从列表里摘掉。彻底清只有两条路：
+GUI 删除/归档，或重启 Host（日志已不存在，启动时开不出来）。删会话前先确认它不在跑，或者干脆走 GUI。
+
+### 轮次 F：v1.4.0（`session_error_audit` + Code Wiki）
+
+离线：`npm test` **78 项 / 3 个文件**通过（新增 `tests/error-audit.test.ts`：归类词表、
+先具体后泛化的优先级、招错目标的引号提取、默认值与钳位、非 ISO `since` 拒绝、坏字节返回空而不是抛错）；
+`node scripts/build.mjs tsconfig.typecheck.json` 退出 0；`pack.ps1` 产出
+`release/dsh-agent-session-tools-1.4.0.tgz`（`SHA256SUMS.txt` 记录哈希）。
+
+现场（`web` profile，2026-11-14，工具已在运行中的 Host 注册）：
+
+```
+session_error_audit {since: 2026-11-12T00:00:00Z, top: 2}
+session_error_audit: 63 tool errors across 10 sessions with errors
+— categories —   34 other / 15 edit-mismatch / 7 search-bad-path / 4 bad-args / 2 network / 1 syntax
+— worst sessions — 51 D:\code\DSH / 9 D:\code\系统维护
+— top offenders —  11 grep / 8 pwsh
+```
+
+摘要一行结论、行数固定，会话正文没有进上下文 ✓。`since` 给非 ISO 字符串时报
+`session_error_audit: since must be an ISO 8601 date/time string`（在扫盘之前拒）。

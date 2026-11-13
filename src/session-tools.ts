@@ -6,6 +6,8 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-workspace'
+import type { Workspace, WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {
@@ -23,6 +25,7 @@ import {
   describeFailure,
   hasText,
   lookupRetry,
+  ownerWorkspace,
   promptRequestId,
   providerOfModel,
   rememberRetry,
@@ -156,14 +159,41 @@ async function resolveProvider(model: string, ctx: Context): Promise<string> {
  * @param ctx - the plugin context; only `sessionController` is read, at call time.
  * @returns the registry-ready definition.
  */
+/**
+ * The Workspace the new Session should join, or undefined to create it
+ * unattached. `session.create` takes `workspaceId` or `cwd`, and only the first
+ * attaches the Session to a Workspace: a cwd-only Session belongs to no group,
+ * and the UI files it outside every workspace. So a named directory is looked
+ * up first — with no location argument the Session follows the Workspace the
+ * calling Session is in.
+ * @param ctx - plugin context, for the Workspace registry.
+ * @param args - the validated location arguments.
+ * @param exec - tool execution context, whose Agent is the calling Session.
+ * @returns the Workspace to join, or undefined when none matches.
+ */
+async function joinTarget(
+  ctx: Context,
+  args: { cwd?: string; workspaceId?: string },
+  exec: { readonly agent?: unknown },
+): Promise<Workspace | undefined> {
+  const registry = ctx.workspaceRegistry
+  if (args.workspaceId !== undefined) return registry.get(args.workspaceId as WorkspaceId)
+  if (args.cwd !== undefined) return await registry.resolveByPath(checkedCwd(args.cwd))
+  return ownerWorkspace(registry.list(), (exec.agent as { id?: string } | undefined)?.id)
+}
+
 export function createSessionTool(ctx: Context) {
   return defineTool({
     name: 'session_create',
-    description: 'Create a new Session and return its id. Use it when no existing Session fits the work; the id it returns is what session_inject targets. The new Session is an ordinary conversation the user can open, not a hidden helper, and it starts idle: nothing runs until a message arrives. By default it runs this session\'s model and reasoning effort; model, provider and reasoningEffort choose otherwise. A selected model is validated by the Host against its model catalog, and the Host also records it as the deployment\'s default model. The Session inherits this deployment\'s default Agent preset and file policy unless agentPreset names another preset. Pass cwd only to own a specific directory; omit it to keep the Host default workspace. Fails when cwd is not an accessible absolute directory, the named preset is unknown, or the requested model or reasoning effort is not servable.',
+    description: 'Create a new Session and return its id. Use it when no existing Session fits the work; the id it returns is what session_inject targets. The new Session is an ordinary conversation the user can open, not a hidden helper, and it starts idle: nothing runs until a message arrives. By default it runs this session\'s model and reasoning effort; model, provider and reasoningEffort choose otherwise. A selected model is validated by the Host against its model catalog, and the Host also records it as the deployment\'s default model. The Session inherits this deployment\'s default Agent preset and file policy unless agentPreset names another preset. It also joins a Workspace, which is the group the UI lists it under: with no location argument it joins the Workspace this session belongs to, with cwd it joins the Workspace already registered for that directory, and with workspaceId it joins that Workspace and owns its directory. A directory no Workspace is registered for is taken as a plain cwd and the Session stays ungrouped, so name workspaceId when grouping matters. Pass workspaceId or cwd, not both. Fails when cwd is not an accessible absolute directory, the named preset is unknown, the named Workspace does not exist, or the requested model or reasoning effort is not servable.',
     parameters: {
       cwd: {
         type: 'string',
         description: 'Absolute directory the new Session owns. Relative paths are rejected; nothing is guessed from a base directory.',
+      },
+      workspaceId: {
+        type: 'string',
+        description: 'Workspace id the new Session joins, which is the group the UI lists it under. Exclusive with cwd. Must name a Workspace this deployment has registered; the Session then owns that Workspace directory.',
       },
       agentPreset: {
         type: 'string',
@@ -189,6 +219,8 @@ export function createSessionTool(ctx: Context) {
         properties: {
           sessionId: { type: 'string', required: true },
           cwd: { type: 'string' },
+          workspaceId: { type: 'string' },
+          workspaceTitle: { type: 'string' },
           agentPreset: { type: 'string' },
           provider: { type: 'string' },
           model: { type: 'string' },
@@ -198,7 +230,9 @@ export function createSessionTool(ctx: Context) {
       render: (_args, value) => [{
         type: 'text',
         text: `session created: ${value.sessionId}`
-          + ` (cwd: ${value.cwd ?? 'default'})`
+          + (value.workspaceTitle === undefined
+            ? ` (cwd: ${value.cwd ?? 'default'}, ungrouped)`
+            : ` (workspace: ${value.workspaceTitle}, cwd: ${value.cwd ?? 'default'})`)
           + (value.agentPreset === undefined ? '' : ` (preset: ${value.agentPreset})`)
           + (value.model === undefined
             ? ''
@@ -207,13 +241,17 @@ export function createSessionTool(ctx: Context) {
     },
     async execute(args, exec) {
       if (exec.signal.aborted) throw new Error('session_create: cancelled before the call began')
+      if (args.cwd !== undefined && args.workspaceId !== undefined) {
+        throw new Error('session_create: pass workspaceId or cwd, not both')
+      }
       const selection = await resolveSelection(ctx, args, exec)
       // Resolution awaits the catalog and the current selection, so the call
       // can be cancelled after the entry check; creation is un-cancellable
       // once it starts, so this is the last point where aborting is free.
       if (exec.signal.aborted) throw new Error('session_create: cancelled before the session was created')
+      const joined = await joinTarget(ctx, args, exec)
       const request: SessionCreateRequest = {
-        ...(args.cwd === undefined ? {} : { cwd: checkedCwd(args.cwd) }),
+        ...(joined === undefined ? (args.cwd === undefined ? {} : { cwd: checkedCwd(args.cwd) }) : { workspaceId: joined.id }),
         ...(args.agentPreset === undefined ? {} : { agentPreset: args.agentPreset }),
       }
       let created: SessionCreateValue
@@ -222,11 +260,16 @@ export function createSessionTool(ctx: Context) {
       } catch (error) {
         throw describeFailure('session_create', error)
       }
+      // What the caller is told about where the Session lives: a joined
+      // Workspace reports its own path, since that is the cwd the Host used.
+      const location = joined === undefined
+        ? (args.cwd === undefined ? {} : { cwd: args.cwd })
+        : { workspaceId: joined.id, workspaceTitle: joined.title, cwd: joined.path }
       if (selection === undefined) {
         return {
           sessionId: created.sessionId,
           ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
-          ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+          ...location,
         }
       }
       try {
@@ -239,7 +282,7 @@ export function createSessionTool(ctx: Context) {
         return {
           sessionId: created.sessionId,
           ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }),
-          ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
+          ...location,
           provider: selected.provider,
           model: selected.model,
           ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),

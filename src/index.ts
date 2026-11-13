@@ -6,9 +6,10 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { createSessionTool, injectSessionTool } from './session-tools.ts'
+import { auditSessionTool } from './error-audit.ts'
 
 export const name = 'agent-session-tools'
-export const inject = ['tools', 'sessionController']
+export const inject = ['tools', 'sessionController', 'workspaceRegistry']
 
 /**
  * Register both tools for the plugin lifetime. `ctx.tools.register` hands back
@@ -18,4 +19,5 @@ export const inject = ['tools', 'sessionController']
 export function apply(ctx: Context): void {
   ctx.effect(() => ctx.tools.register(createSessionTool(ctx)), 'session_create')
   ctx.effect(() => ctx.tools.register(injectSessionTool(ctx)), 'session_inject')
+  ctx.effect(() => ctx.tools.register(auditSessionTool(ctx)), 'session_error_audit')
 }

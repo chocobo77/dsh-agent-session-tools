@@ -123,6 +123,20 @@ export function rememberRetry<T>(ledger: Map<string, RetryRecord<T>>, key: strin
 }
 
 /**
+ * The Workspace that owns one Session, by its ordered session account.
+ * @param workspaces - the registry's live workspaces, in display order.
+ * @param sessionId - the Session to locate; undefined when the call carries no Agent.
+ * @returns the owning Workspace, or undefined when the Session is unclassified.
+ */
+export function ownerWorkspace<T extends { id: string; sessionIds: readonly string[] }>(
+  workspaces: readonly T[],
+  sessionId: string | undefined,
+): T | undefined {
+  if (sessionId === undefined) return undefined
+  return workspaces.find(workspace => workspace.sessionIds.includes(sessionId))
+}
+
+/**
  * Whether a prompt carries something the target Agent should see.
  * @param value - the model-supplied `message`.
  * @returns false for empty or whitespace-only text.

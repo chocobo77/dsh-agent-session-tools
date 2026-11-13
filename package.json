@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-session-tools",
   "description": "session_create and session_inject agent tools over the Host Session Controller. / 基于宿主 Session Controller 的 session_create 与 session_inject 工具。",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "private": true,
   "type": "module",
   "main": "dist/index.js",
@@ -48,7 +48,8 @@
     "@deepseek-ai/dsh-api-session-controller": "workspace:~",
     "@deepseek-ai/dsh-llm": "workspace:~",
     "@deepseek-ai/dsh-session": "workspace:~",
-    "@deepseek-ai/dsh-tools": "workspace:~"
+    "@deepseek-ai/dsh-tools": "workspace:~",
+    "@deepseek-ai/dsh-workspace": "workspace:~"
   },
   "engines": {
     "node": ">=22.19.0"

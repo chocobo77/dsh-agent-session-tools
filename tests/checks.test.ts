@@ -3,7 +3,26 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { ModelCatalog } from '@deepseek-ai/dsh-api-session-controller'
-import { carriedEffort, checkedCwd, checkedEffort, describeFailure, hasText, lookupRetry, promptRequestId, providerOfModel, rememberRetry, retryLedgerLimit, retryWindowMs, type RetryRecord } from '../src/checks.ts'
+import { carriedEffort, checkedCwd, checkedEffort, describeFailure, hasText, lookupRetry, ownerWorkspace, promptRequestId, providerOfModel, rememberRetry, retryLedgerLimit, retryWindowMs, type RetryRecord } from '../src/checks.ts'
+
+describe('ownerWorkspace', () => {
+  const workspaces = [
+    { id: 'ws-a', title: 'A', path: '/a', sessionIds: ['session-1', 'session-2'] },
+    { id: 'ws-b', title: 'B', path: '/b', sessionIds: ['session-3'] },
+  ]
+
+  it('finds the Workspace that accounts the session', () => {
+    expect(ownerWorkspace(workspaces, 'session-3')?.id).toBe('ws-b')
+  })
+
+  it('answers undefined when the call carries no session', () => {
+    expect(ownerWorkspace(workspaces, undefined)).toBeUndefined()
+  })
+
+  it('answers undefined for a session no Workspace owns', () => {
+    expect(ownerWorkspace(workspaces, 'session-loose')).toBeUndefined()
+  })
+})
 
 /** A catalog with one visible group per entry and nothing failed. */
 function catalogOf(groups: { id: string; models: { id: string; reasoning?: { efforts: { id: string }[]; defaultEffort?: string } }[] }[]): ModelCatalog {
