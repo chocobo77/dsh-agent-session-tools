@@ -12,9 +12,11 @@
 //   $DSH_HOME           a DSH checkout; its node_modules is used
 //   ./node_modules      if it already provides typescript + @deepseek-ai types
 //                       (a previous run's shim, or a real install)
-//   the verified checkout  the DSH source checkout this project was built
-//                       against, translated to every mount under /media that
-//                       carries it (the drive may move between machines)
+//   .dsh-buildrc.json   gitignored, next to package.json: {"nodeModules": …}
+//                       and/or {"checkout": a DSH source checkout}
+//   $DSH_CHECKOUT       a DSH source checkout, same as the rc field; tried as
+//                       written, then translated to every mount under /media
+//                       that carries it (the drive may move between machines)
 //   sibling projects    <root>/../<name>/node_modules and grandparent entries
 //                       offering the same
 // `tsc` itself can also be pinned via $DSH_TSC (explicit path to tsc.js).
@@ -103,10 +105,7 @@ function findDepsRoots() {
   // A source checkout outranks siblings — published @deepseek-ai packages may
   // lag the checkout's type surface. Try it as written, then every /media mount
   // that carries the same subtree, since the drive may move between machines.
-  const checkout = process.env['DSH_CHECKOUT'] ?? local.checkout
-  if (checkout !== undefined && checkout !== '') {
-    for (const candidate of [checkout, ...windowsMounts(checkout)]) candidates.push(join(candidate, 'node_modules'))
-  }
+  for (const candidate of checkoutCandidates) candidates.push(join(candidate, 'node_modules'))
   // Siblings one and two levels up: the repo may sit inside a checkout or
   // next to other plugin projects on either level.
   const seen = new Set([root, dirname(root)])
@@ -139,7 +138,7 @@ if (depsRoot === undefined) {
  * keeps its packages under `packages/` and vendored cordis under `vendor/`.
  */
 function findCheckoutRoots() {
-  const candidates = [...depsRoots.map(dirname), checkout, ...windowsMounts(checkout)]
+  const candidates = [...depsRoots.map(dirname), ...checkoutCandidates]
   return candidates.filter(directory => isDirectory(join(directory, 'packages')) || isDirectory(join(directory, 'vendor')))
 }
 
