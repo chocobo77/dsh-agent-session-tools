@@ -61,8 +61,9 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
 
 `scripts/build.mjs` 把 `typescript`、`@types`、`@deepseek-ai/*` 链接进本目录
 `node_modules` 垫片（gitignore）。来源查找顺序：`$DSH_NODE_MODULES` →
-`$DSH_HOME/node_modules` → `./node_modules` → DSH checkout（`D:/Program files/deepseek-harness`
-及其 `/media` 挂载）→ 兄弟项目。相比 `adaptive-effort-scheduler` 的同名脚本改了四处，
+`$DSH_HOME/node_modules` → `.dsh-buildrc.json`（gitignore，`{"checkout": "<DSH 源码 checkout>"}`
+或 `{"nodeModules": "<node_modules 目录>"}`）→ `./node_modules` → 该 checkout 的 `/media` 挂载
+→ 兄弟项目。仓库里不含任何机器路径。相比 `adaptive-effort-scheduler` 的同名脚本改了四处，
 都是为了在本机（Windows + 源码 checkout 布局）真的能构建：
 
 1. checkout 候选除 `/media` 挂载翻译外也按字面路径试一次——Windows 上没有 `/media`，
@@ -82,10 +83,9 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
 
 ## 兼容基线（本地取证，2026-11-06）
 
-取证对象是**当前安装**：本机的 DSH 运行自源码 checkout
-`D:\Program files\deepseek-harness`（进程 `node apps/cli/lib/bin.js web`），
-版本 `@deepseek-ai/dsh 0.2.2-alpha.2`。所有结论以本地
+取证对象是**当前安装**的那一版 DSH（`@deepseek-ai/dsh 0.2.2-alpha.2`）。所有结论以安装内的
 `packages/**/lib/**/*.d.ts`（插件编译时真正看到的声明）为准，`src/` 行号一并给出。
+换版本时这些签名要重新核对 —— DSH 处于 developer preview，接口会漂。
 
 ### `ctx.sessionController` 服务
 
@@ -217,7 +217,7 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
     `inject` 因此多了 `workspaceRegistry`（`@deepseek-ai/dsh-workspace`，`lib/types/index.d.ts:82`）。
     profile 里没挂 `workspace` 行的（比如裸 `headless`）插件会因 `inject` 不满足而不激活——
     `web` 有这一行。
-  - `agentPreset` 可选，透传给宿主；preset 不存在时由宿主报错（实测 `agent-preset/not-found`，且不会留下会话）。
+  - `agentPreset` 可选，透传给宿主；preset 不存在时由宿主报错（`agent-preset/not-found`，不会留下会话）。
   - **模型与思考强度（v1.2.0）**：新建会话默认**沿用当前会话的模型与思考强度**（"同模型、同思考强度"），
     也可由调用方指定：
     - 当前会话的选择读自执行上下文里 live Agent 的运行时面 `exec.agent.model.current()`
@@ -250,11 +250,11 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
 - `session_inject`
   - 副作用：写入的是**真实用户消息**，进入目标会话的持久日志，不可撤销；插件不做内容审查。
   - 副作用还包括**唤醒目标会话**：消息被接受后目标会话会按它自己的 preset / 权限模式 / 文件策略继续执行
-    （实测 queue 注入后目标会话直接跑了一轮并回复）。
+    （queue 注入后，目标会话会按它自己的 preset 跑一轮并回复）。
   - 可达范围：普通顶层会话。subagent 拥有的会话会被宿主拒掉：
     `session "…" is owned by subagent routing (session/agent-busy)`
     （`packages/api/session-controller/src/agent.ts:114-120`；这类会话的存储目录名也没有
-    `session-` 前缀，实测见轮次 C）。
+    `session-` 前缀）。
   - `message` 必填，纯空白在插件侧先拒。
   - `requestId`（v1.1.0 起可选，幂等键）：
     - 省略 → 键为 `agent-tools:<rootCallId>`，即**每个模型 tool call 一个键**
@@ -265,28 +265,23 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
     - 宿主侧去重：`src/commands.ts:306` `hasPromptRequest(agent, requestId)` 命中就直接
       `return { accepted: true }`，不再插入消息。一个键**不要**用于两条不同文本。
     - 加 `agent-tools:` 前缀是为了不和别的生产者（GUI 自己的 rpcId）撞键。
-    - **去重有窗口缺口（1.1.0 实测发现）**：宿主的 `hasPromptRequest` 只查 inbox 与已落盘历史
+    - **去重有窗口缺口（1.1.0 起在本机复现过）**：宿主的 `hasPromptRequest` 只查 inbox 与已落盘历史
       （`src/commands.ts:542-553`），而消息一进 turn 就离开 inbox、它的 `user/message` 要等到
-      turn 开始才写盘，所以这中间发出的同键第二次调用查不到任何东西，会再插一条。实测序列：
-      `splice @3`（消息 A）→ `turn/start @4` → `splice @6`（消息 B，同 rpcId、不同 message id）
-      → `user/message @9`（只有 A 落盘）。执行器把同一步里的两次调用**串行**跑完
-      （tool call id 是 `call_00_…` 与 `call_01_…`），所以单纯加并发锁没用。
+      turn 开始才写盘，所以这中间发出的同键第二次调用查不到任何东西，会再插一条。执行器还会把
+      同一步里的两次调用**串行**跑完，所以单纯加并发锁没用。
     - v1.1.1：本注册实例内持有“已发起的 prompt”，同键并发合并成一次；同键不同文本直接报
       `… is already in flight with different text`。
     - v1.1.2：再加一张 60 秒的**已完成键账本**（`lookupRetry`/`rememberRetry`，上限 256 条，
       每次查询按龄清理，随注册实例释放）。同键同文本在窗口内直接复用上一次回执、不再调宿主；
       同键不同文本报 `… was already used for different text within 60s`。这把上面那个缺口堵上，
       跨进程/超窗的重试仍由宿主按历史去重。
-  - `accepted: true` 只表示**已进 Agent 的 inbox**，不保证最终被处理。实测两种落空：
-    上面那条重复副本（`splice @6`）从未成为 `user/message`；一次性 headless 运行里
-    `session_inject` 成功入队（`splice @19`）但调用方进程随后退出，该副本在会话销毁时丢弃，
-    之后唤醒该会话也不会补处理（唤醒只处理了新注入的那条）。长命 Host（web profile）里
-    queue 的 pending 会正常成为下一个 turn，也会被投影缓存持久化
+  - `accepted: true` 只表示**已进 Agent 的 inbox**，不保证最终被处理：会话被销毁时 pending 会被
+    记成取消并丢弃，之后唤醒该会话也不会补处理。长命 Host（如 web profile）里 queue 的 pending
+    会正常成为下一个 turn，也会被投影缓存持久化
     （`storages/session_projcache/sessions/<id>.json` 的 `inbox.next-turn`）。
-  - `mode`：`'queue'`（默认，落到 `target=next-turn`）或 `'steer'`（落到 `target=next-step`），
-    实测两种落点在目标会话日志里就是这两个值（`src/commands.ts:338-339`）。
-    目标会话**正在跑 turn** 时：steer 在下一个 step 边界被吃进**同一个 turn**（那一轮的最终回复
-    体现了注入内容，实测 `done STEER-OK`），queue 排队成**下一个 turn**（实测 `done STEER-OK QUEUE-OK`）。
+  - `mode`：`'queue'`（默认，落到 `target=next-turn`）或 `'steer'`（落到 `target=next-step`，
+    `src/commands.ts:338-339`）。目标会话**正在跑 turn** 时：steer 在下一个 step 边界被吃进
+    **同一个 turn**，queue 排队成**下一个 turn**。
 
 ### `session_error_audit`（v1.4.0）
 
@@ -342,152 +337,17 @@ dsh plugin --profile <test-profile> add <release/dsh-agent-session-tools-<versio
 开发期免打包：`dsh --profile <profile> --patch ./cordis.yml`，把条目指到 `./dist/index.js`
 （本目录的 `node_modules` 垫片让 `@deepseek-ai/*` 在运行期也能解析）。
 
-## 验证结果（2026-11-06）
+## 变更记录
 
-离线：`npm run typecheck` 与 `npm run build` 退出 0；`npm test` 36 项通过
-（`tests/checks.test.ts` 16 项：cwd 绝对性/存在性/是目录、错误码保留、空文本判定、
-`promptRequestId` 的三种来源与拒绝、`lookupRetry`/`rememberRetry` 的窗口/复用冲突/上限清理；
-`tests/session-tools.test.ts` 20 项：只注册这两个工具、disposer 反注册、`create` 的 request 形状
-（含省略 `cwd` 时不塞空字段）、相对路径与取消信号在调用宿主**之前**拦截、
-`prompt` 收到 `[{type:'text',text}]`、键为 `agent-tools:<rootCallId>`、显式 `requestId` 的命名空间与
-回传原样复用、非法 `requestId` 在调用宿主前被拒、同键并发合并、同键不同文本报错、账本把串行重试
-也合并成一次调用宿主、第二次参数是 `exec.signal`、宿主错误带 code 包装、两个 render 行）。
-`pack.ps1` 全流程通过，tarball 14 项、约 18 KB，构建出的 `sha256` 由
-`release/SHA256SUMS.txt` 记录（`release/` 在 gitignore 内，以最近一次运行为准）。
-
-### v1.2.0（模型与思考强度继承）离线验证（2026-11-07）
-
-`npm run typecheck` 与 `npm run build` 退出 0；`npm test` 63 项通过。同轮 review 后：
-`tsconfig.typecheck.json` 的 include 扩到 `tests/**`（此前测试**完全不做类型检查**），
-`scripts/build.mjs` 垫片相应增加 vitest 包链接（在多个 deps root 里探测携带者）；
-`session_create` 在选择解析完成后、创建之前**复查取消信号**（解析新增了 await 点，
-取消可能落在原入口检查之后）；`model` / `provider` / `reasoningEffort` 拒绝纯空白取值。
-
-新增 `tests/checks.test.ts` 10 项（`providerOfModel` 唯一解析/未列出含加载失败 provider/
-多 provider 歧义、`checkedEffort` 可见目录提供/不提供列出可选项/无可见清单透传、
-`carriedEffort` 无 effort 不带/可提供保留/不可提供降级 `defaultEffort`/无清单透传）与
-`tests/session-tools.test.ts` 17 项（无 Agent 不选模型、模型读取器抛错退部署默认、
-空白 model/provider/effort 在调用宿主前被拒、解析期间取消在创建前被观察到、整体继承含/不含 effort、
-目录反查 provider、同模型 id 沿用当前路由、歧义模型与未知模型在**创建之前**被拒、
-`provider` 缺 `model` 被拒、显式 effort 不可提供在创建前被拒、继承 effort 降级与保留、
-显式 effort 施加到继承模型、无模型可施加被拒、`selectModel` 失败报文带 sessionId、
-含 model/effort 的 render 行）。现场轮次待装包后补。
-
-### 轮次 A：安装到用户的 `web` profile 后现场调用（v1.0.0）
-
-Host `Tool.listTools` 里 `session_*` 只有这两个工具，发布的参数 schema 正确
-（`mode` 带 `enum: [queue, steer]` + `default: queue`，`required: [sessionId, message]`）。
-本会话直接调用，目标会话日志给出独立证据，同时证明创建的是**顶层会话**：
-
-| 调用 | 实际结果 |
+| 版本 | 变更 |
 |---|---|
-| `session_create {cwd: D:\code\DSH\plugin-live-test}` | `session created: session-ef1cb4c0-… (cwd: …) (preset: standard)` |
-| `session_inject {mode: queue}` | 日志 `agent/inbox/spliced target=next-turn` → `user/message` @seq 9（`source.rpcId` 即返回的 requestId）→ 该会话跑了 turn 1 并回复 |
-| `session_inject {mode: steer}` | 日志 `target=next-step` → `user/message` @seq 26 → turn 2 回复 |
-| `session_create {cwd: ./relative-dir}` | `session_create: cwd must be an absolute directory, got "./relative-dir"` |
-| `session_inject {message: "   "}` | `session_inject: message must contain non-whitespace text` |
-| `session_inject {sessionId: session-does-not-exist-000000}` | `session_inject: session "session-does-not-exist-000000" not found (session/not-found)` |
-| `session_create {agentPreset: no-such-preset}` | `session_create: Unknown agent preset: no-such-preset (agent-preset/not-found)`，且没有留下会话 |
+| 1.0.0 | `session_create` / `session_inject`：绝对路径 `cwd`、`queue` / `steer` 两种落点、宿主错误码原样保留 |
+| 1.1.0 | `requestId` 可选幂等键；省略时用 `agent-tools:<rootCallId>` |
+| 1.1.1 | 注册实例内的 in-flight 表：同键并发合并成一次，同键不同文本报错 |
+| 1.1.2 | 60 秒已完成键账本：串行重试落在宿主去重窗口缺口内也只插入一次 |
+| 1.2.0 | 模型选择 `model` / `provider` / `reasoningEffort`，默认继承调用方当前 route 与思考强度 |
+| 1.3.0 | Workspace 归组：注入 `workspaceRegistry`，不带位置参数时沿用当前会话所属的 Workspace |
+| 1.4.0 | 只读工具 `session_error_audit`（有界摘要）；Code Wiki 8 页 |
 
-日志里只有 `session / permission/preset / model/selection / turn/start / step/start / user/message`
-这类记录，没有任何 `subagent/*`，工作目录就是传入的 `cwd`。
-
-### 轮次 B：一次性 profile 里的 v1.1.0 回归（幂等键）
-
-`dsh --profile ast-verify --from-default-profile headless` 从随附模板创建，只往这个 profile 装 tarball；
-headless 模板缺会话控制的宿主行，用 `--patch` 叠加层补上（`insert`: `session-controller` /
-`connection` / `file-upload` / `workspace`，并打开被 headless 关掉的 `credentials` /
-`authorization` / `deepseek-account`）。命令与参数取自本地 `dsh --help` /
-`dsh --profile headless --help` 的实际输出。
-
-| # | 检查 | 结果 | 证据 |
-|---|---|---|---|
-| 1 | 启动无报错 | 通过 | headless 运行 stderr 无 `did not activate` / 导入错误 |
-| 2 | `session_create` 返回 sessionId | 通过 | `session created: session-ce91c719-1694-413f-8d35-c28dd63b3688 (cwd: D:\code\DSH\verify-scratch)` |
-| 3 | 相对路径被拒 | 通过 | 同轮次 A（单元 + 现场各一次） |
-| 4 | 空 message 被拒 | 通过 | 同轮次 A |
-| 5 | `mode` 两值可用 | 通过 | `target=next-turn`（queue）与 `target=next-step`（steer）落点在轮次 A 的日志里区分清楚 |
-| 6 | 省略 `requestId` → 键取本次 tool call | 通过 | 返回值 `request: agent-tools:call_00_ehFKLtE3OfACk8xntiMd9875`，与 harness 的 callId 一致 |
-| 7 | 同一 `requestId` 重试不重复插入 | 通过 | 两次 `requestId=retry-fixed-1` 都返回 accepted，但目标会话日志里只有 **一条** 插入：`agent/inbox/spliced` @seq 3 + `user/message` @seq 8（`rpcId=agent-tools:retry-fixed-1`） |
-
-### 轮次 C：现场探针（web profile，1.1.0 / 1.1.1）
-
-| 探针 | 结果 | 证据 |
-|---|---|---|
-| 带空格与中文的 `cwd` | 通过 | `session created: session-8543d554-… (cwd: D:\code\DSH\probe 目标 dir)`，存储 slug 编码成 `--D-code-DSH-probe~0020~76EE~6807~0020dir--` |
-| 不存在的 `cwd` | 通过 | `session_create: cwd is not accessible (ENOENT): D:\code\DSH\probe-workspace` |
-| 目标会话正在跑 turn 时 `mode: steer` | 通过 | `splice @19 target=next-step` → 该轮最终回复 `done STEER-OK`（同一个 turn 内被吃进） |
-| 同一时刻 `mode: queue` | 通过 | `splice @20 target=next-turn` → 成为 turn 2，回复 `done STEER-OK QUEUE-OK` |
-| 注入 subagent 拥有的会话 | 被宿主拒 | `session "f26c5545-…" is owned by subagent routing (session/agent-busy)`（`src/agent.ts:114-120`）；该会话目录名无 `session-` 前缀 |
-| 同一步两次同键注入（1.1.0） | **暴露缺口** | 两次都 accepted，但日志出现两条不同 message id 的 `splice`（@3、@6），其中 @6 那条最终没落 `user/message` |
-| 同上（1.1.1，只有并发锁） | 仍然重复 | 执行器把两次调用**串行**跑（`call_00_…` 与 `call_01_…`），锁已释放 → `splice @3/@6` 两条 |
-| 同上（1.1.2，60 秒账本） | 通过 | 两条 tool result 都 accepted，但目标会话只有 `splice @3` + `user/message @8` 一条（`session-48501e1a-c6d3-4410-af47-c27a1d4b336e`） |
-| 一次性 headless 里入队后进程退出 | 副本丢失 | `splice @19`（`seq-key-1`）之后再无该 rpcId 的 `user/message`；事后唤醒该会话也只处理新注入的那条 |
-
-另外记一条运维边界：直接 `rm -rf` 会话目录不是干净删除 —— GUI 列表读的是
-`storages/session_projcache/sessions/<id>.json`（per-record 投影缓存，会话销毁时还会再写一次），
-日志没了条目仍在。清理要么走 Host 的移除/归档路径，要么把日志目录和这个缓存文件一起删。
-
-### 轮次 D：Workspace 归组（v1.3.0，一次性 profile 现场）
-
-起因：只给 `cwd` 的 `create` 不会把会话挂到任何 Workspace，UI 把这类会话排在所有分组之外（“未分类”）。
-下面是对着**真实** Workspace 注册表（`storages/workspace.json`，`D:\code\DSH` 的 id 为
-`b4887ea9-…`，当时 5 个会话）跑的：
-
-| 调用 | 结果 |
-|---|---|
-| `session_create {cwd: D:\code\DSH}` | `session created: session-f39deae2-… (workspace: DSH, cwd: D:\code\DSH)`；该 Workspace 账号从 5 → 7，新 id 前置 ✓ |
-| `session_create {workspaceId: b4887ea9-…}` | `… (workspace: DSH, cwd: D:\code\DSH)` ✓ |
-| `session_create {cwd, workspaceId}` | `session_create: pass workspaceId or cwd, not both`，未创建会话 ✓ |
-| `session_create {}`（headless 会话本身不属于任何 Workspace） | `… (cwd: default, ungrouped)`，没有伪造 Workspace ✓ |
-
-“沿用当前会话所属 Workspace”这条分支在 headless 里没法现场跑（那种会话本就不在任何 Workspace，
-于是走 fallback），由 `tests/session-tools.test.ts` 的
-`joins the Workspace the calling session belongs to when no location is given` 覆盖；
-重启 `web` Host 后在 GUI 会话里现场复验。
-
-删除测试会话后，该 Workspace 的**持久**账号里仍留着那两个 id：宿主读 `sessionIds` 时按会话
-header 过滤（`packages/workspace/workspace/src/types.ts:89-100`），所以 UI 不再显示它们，
-下一次该 Workspace 的写操作会把它们剪掉。
-
-验证产生的一次性 profile `ast-verify`、`verify-scratch` 与 `probe-*` 会话（含各自的
-projcache 条目）、`plugin-live-test` 会话与目录均已删除。
-
-### 轮次 E：重启 `web` Host 后的现场复验（v1.3.0）
-
-| 检查 | 结果 |
-|---|---|
-| 不带位置参数的 `session_create`（当前会话属于 `D:\code\DSH` 的 Workspace，标题 `DSH插件`） | `session created: session-4e59b295-… (workspace: DSH插件, cwd: D:\code\DSH) (preset: standard) (model: strata/iq3_s, effort: medium)`；该 Workspace 的 `sessionIds` 里新 id **前置** ✓ —— “默认落在同一个工作区”这条分支只有这种现场能验 |
-| 对新会话 `session_inject`（queue） | `splice @4 target=next-turn` → `user/message @10`（正文落盘）→ `turn/start @5` → `ASST @19` → `turn/end @21 completed`：新建的顶层会话确实能被唤醒并跑完一轮 ✓ |
-| `session_create {cwd: ./relative-dir}` | `session_create: cwd must be an absolute directory, got "./relative-dir"`，没有留下会话 ✓ |
-| 模型继承 | 同一 route 与思考强度（`strata/iq3_s` / `medium`）随 v1.2.0 的继承逻辑照常带过去 ✓ |
-
-顺带确认宿主的账号剪枝：`4e59b295` 那次 attach 顺手把之前遗留的三个失效 id（两个 headless
-测试会话 + 另一个）从**持久**账号里剪掉了。删会话文件本身不触发账号变更，所以被删会话的 id 会
-留在 `sessionIds` 里，直到下一次该 Workspace 的写操作（读时按 header 过滤，UI 不显示）。
-要立刻干净就走 GUI 的删除/归档 —— 那是宿主自己的移除路径，会顺带 detach。
-
-**补一条同批次的教训**：那次删完文件后用户在 GUI 里**仍然看得见**该会话。原因是它当时在这个 Host
-进程里还**活着**（被 `session_inject` 唤醒过、从未 dispose），列表对活会话走宿主 feed，再加上页面
-自己也持有已打开过的会话对象 —— 所以在进程底下删文件不会把它从列表里摘掉。彻底清只有两条路：
-GUI 删除/归档，或重启 Host（日志已不存在，启动时开不出来）。删会话前先确认它不在跑，或者干脆走 GUI。
-
-### 轮次 F：v1.4.0（`session_error_audit` + Code Wiki）
-
-离线：`npm test` **78 项 / 3 个文件**通过（新增 `tests/error-audit.test.ts`：归类词表、
-先具体后泛化的优先级、招错目标的引号提取、默认值与钳位、非 ISO `since` 拒绝、坏字节返回空而不是抛错）；
-`node scripts/build.mjs tsconfig.typecheck.json` 退出 0；`pack.ps1` 产出
-`release/dsh-agent-session-tools-1.4.0.tgz`（`SHA256SUMS.txt` 记录哈希）。
-
-现场（`web` profile，2026-11-14，工具已在运行中的 Host 注册）：
-
-```
-session_error_audit {since: 2026-11-12T00:00:00Z, top: 2}
-session_error_audit: 63 tool errors across 10 sessions with errors
-— categories —   34 other / 15 edit-mismatch / 7 search-bad-path / 4 bad-args / 2 network / 1 syntax
-— worst sessions — 51 D:\code\DSH / 9 D:\code\系统维护
-— top offenders —  11 grep / 8 pwsh
-```
-
-摘要一行结论、行数固定，会话正文没有进上下文 ✓。`since` 给非 ISO 字符串时报
-`session_error_audit: since must be an ISO 8601 date/time string`（在扫盘之前拒）。
+行为语义以上文「工具语义」与「兼容基线」为准。离线检查：`npm test`（`tests/` 三个文件）、
+`node scripts/build.mjs tsconfig.typecheck.json`。

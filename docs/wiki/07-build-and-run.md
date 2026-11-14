@@ -18,7 +18,7 @@
 |---|---|---|
 | `npm run typecheck` | `node scripts/build.mjs tsconfig.typecheck.json` | 严格类型检查（noEmit，覆盖 `src/` + `tests/`） |
 | `npm run build` | `node scripts/build.mjs tsconfig.build.json` | 产出 `dist/*.js` + `.d.ts` |
-| `npm test` | `vitest run` | 3 个文件 78 项测试（当前实测） |
+| `npm test` | `vitest run` | 三个测试文件（覆盖见 §覆盖要点） |
 | `npm run prepack` | `npm run build` | `npm pack` 前自动构建 |
 | `./pack.ps1` | build → test → npm pack → 校验 → SHA256 | 一键发布（Windows） |
 | `./pack.sh` | 同上（bash 复刻） | 一键发布（Linux/macOS/Git Bash） |
@@ -55,20 +55,11 @@ npx vitest run --config vitest.config.ts   # 任何可用的 vitest 均可
 `pool: 'forks'`。测试直接跑 **TS 源码**（不需要先 build）；`@deepseek-ai/*`
 由垫片解析。
 
-### 当前实测（2026-11-14）
-
-```
-✓ tests/checks.test.ts        (29 tests)
-✓ tests/error-audit.test.ts   (6 tests)
-✓ tests/session-tools.test.ts (43 tests)
-Tests  78 passed (78)
-```
-
 ### 覆盖要点
 
 | 测试文件 | 覆盖 |
 |---|---|
-| `checks.test.ts` | `ownerWorkspace` 三分支；重试账本（窗口/过期清理/异文拒绝/上限）；`promptRequestId` 三来源与非法 token；`hasText`；`describeFailure`（code 保留、非 Error）；`checkedCwd`（相对/存在/缺失/非目录，tmpdir 实测文件系统）；`providerOfModel`（唯一/未列出含失败 provider/歧义）；`checkedEffort`（提供/不提供列可选项/无清单透传）；`carriedEffort`（无 effort/保留/降级 defaultEffort/无清单透传） |
+| `checks.test.ts` | `ownerWorkspace` 三分支；重试账本（窗口/过期清理/异文拒绝/上限）；`promptRequestId` 三来源与非法 token；`hasText`；`describeFailure`（code 保留、非 Error）；`checkedCwd`（相对/存在/缺失/非目录，用 tmpdir 建真实目录）；`providerOfModel`（唯一/未列出含失败 provider/歧义）；`checkedEffort`（提供/不提供列可选项/无清单透传）；`carriedEffort`（无 effort/保留/降级 defaultEffort/无清单透传） |
 | `session-tools.test.ts` | 注册三个工具 + disposer 反注册；`create` 请求体形状（省略 cwd 不塞空字段）、cwd/workspaceId 互斥、相对路径与取消**在调宿主前**拦截、Workspace 三级归组（沿用当前会话/反查/显式 id/不造 Workspace）、模型继承全矩阵（整体抄/同 id 沿用路由/目录反查/歧义与未知模型创建前拒/provider 缺 model/effort 校验与降级/无模型施 effort 被拒/selectModel 失败点名 sessionId）、render 各行；`inject` 请求形状（text 部件数组、mode、键来源）、显式 requestId 重试、异文拒绝、并发合并、串行重试合并、signal 透传、宿主错误带 code |
 | `error-audit.test.ts` | 分类词表与顺序、归因正则、参数默认/钳制/ISO 校验、损坏字节容错 |
 
@@ -126,7 +117,7 @@ dsh --profile <profile> --patch ./cordis.yml
 后插件重启（apply 重跑）即生效，无需重新安装。本目录的 node_modules 垫片同时
 服务运行期解析（`cordis.yml` 头注释）。
 
-一次性验证 profile 的用法（README 轮次 B 的做法）：
+一次性验证 profile 的用法（不碰主力 profile）：
 
 ```sh
 dsh --profile ast-verify --from-default-profile headless

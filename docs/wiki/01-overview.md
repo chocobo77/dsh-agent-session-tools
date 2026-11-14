@@ -68,28 +68,22 @@
 
 | 版本 | 要点 | 出处 |
 |---|---|---|
-| 1.0.0 | `session_create` / `session_inject` 基础语义；现场轮次 A 验证 | README 轮次 A |
-| 1.1.0 | `requestId` 可选幂等键：省略 → `agent-tools:<rootCallId>`；实测发现宿主去重窗口缺口 | README 轮次 B/C |
+| 1.0.0 | `session_create` / `session_inject` 基础语义：绝对路径 `cwd`、`queue` / `steer` 两种落点、宿主错误码原样保留 | README「工具语义」 |
+| 1.1.0 | `requestId` 可选幂等键：省略 → `agent-tools:<rootCallId>`；同时记录宿主去重的窗口缺口 | README「工具语义」 |
 | 1.1.1 | in-flight 并发合并（同键并发只调一次宿主；同键异文报错） | README |
-| 1.1.2 | 60 秒已完成键账本（`lookupRetry`/`rememberRetry`），堵住串行重试缺口 | README 轮次 C |
-| 1.2.0 | 模型与思考强度继承（`model`/`provider`/`reasoningEffort`）；测试纳入类型检查范围 | git tag `3e9f0fa` |
-| 1.3.0 | Workspace 归组：注入 `workspaceRegistry`，`joinTarget` 三级解析；无位置参数时沿用当前会话所属 Workspace | README 轮次 D/E |
-| 1.4.0（当前工作区） | 新增 `session_error_audit`（`src/error-audit.ts`，未入库为 untracked 文件）；测试扩到 78 项 | 工作区 `git status` |
+| 1.1.2 | 60 秒已完成键账本（`lookupRetry`/`rememberRetry`），堵住串行重试缺口 | README |
+| 1.2.0 | 模型与思考强度继承（`model`/`provider`/`reasoningEffort`）；测试纳入类型检查范围 | git tag `v1.2.0` |
+| 1.3.0 | Workspace 归组：注入 `workspaceRegistry`，`joinTarget` 三级解析；无位置参数时沿用当前会话所属 Workspace | README「工具语义」 |
+| 1.4.0 | 新增只读工具 `session_error_audit`（`src/error-audit.ts`）；Code Wiki | git tag `v1.4.0` |
 
-## 5. 已知注意事项（文档与代码的滞后点）
+## 5. 已知注意事项
 
-生成 Wiki 时核对出的、对维护者有用的不一致（均为可验证事实）：
+维护者需要留意的不一致（均为可核对的事实）：
 
-1. **README 落后于工作区**：README 开头仍写"向 Agent 暴露两个工具"、"不注册
-   其他工具"，但当前 `src/index.ts:22` 已注册第三个工具 `session_error_audit`，
-   且 `tests/session-tools.test.ts:107` 的注册断言是三个名字。README 的
-   「验证结果」也停在 v1.2.0 的 63 项（现为 78 项）。
-2. **pack 校验清单未含新模块**：`pack.ps1:90-91` 与 `pack.sh:96-97` 的 tarball
-   必含清单只有 `dist/index.js`、`dist/session-tools.js`、`dist/checks.js`，
-   没有断言 `dist/error-audit.js`。tarball 本身不受影响（`package.json` 的
-   `files: ["dist"]` 会带上整个 dist/），只是发布前的最后一道断言没覆盖新文件。
-3. **`ErrorRecord` 接口暂未被运行时路径引用**：`src/error-audit.ts:23-28` 导出的
-   `ErrorRecord`（cwd/tool/taskHead/text）目前没有被 `scanLines`/`auditSessions`
-   构造，属预留形状。
-4. README 中记录的现场验证轮次（A–E）针对旧版本语义，仍是理解宿主行为的最佳
-   取证材料，但结论应以当前源码为准。
+1. **pack 校验清单**：`pack.ps1` / `pack.sh` 的 tarball 必含清单覆盖
+   `dist/index.js`、`dist/session-tools.js`、`dist/error-audit.js`、`dist/checks.js`；
+   新增 `src/` 模块时这两处要同步加，否则发布前最后一道断言漏掉新文件。
+2. **宿主边界会随版本漂移**：README「兼容基线」的行号与错误码是针对某一版宿主取的证，
+   DSH 处于 developer preview，换版本需重新核对。
+3. **`accepted: true` 不等于已处理**：`session_inject` 只保证进了目标 Agent 的 inbox；
+   会话销毁会把 pending 记成取消并丢弃，宿主不会把这个结果回传给调用方。

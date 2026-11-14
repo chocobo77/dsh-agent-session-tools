@@ -91,7 +91,7 @@ graph TD
 | 1 | `$DSH_NODE_MODULES` | 直接指定一个 node_modules 目录 |
 | 2 | `$DSH_HOME/node_modules` | 指定一个 DSH checkout 根 |
 | 3 | `./node_modules` | 上次运行留下的垫片，或真实 install |
-| 4 | **DSH checkout**：`D:/Program files/deepseek-harness/node_modules`（脚本内常量 `:40`）+ 其每个 `/media` 挂载翻译 | checkout 优先于兄弟项目——published 包的类型面可能落后 |
+| 4 | `.dsh-buildrc.json`（gitignore）：`{"checkout": …}` 或 `{"nodeModules": …}`，也可用 `$DSH_CHECKOUT` | 机器路径不入库；checkout 优先于兄弟项目——published 包的类型面可能落后 |
 | 5 | 兄弟项目：上一级与上两级目录里每个 `*/node_modules` | 插件可能与其他插件项目并排放 |
 
 **资格判定**（`qualifies`，`:55-61`）：目录里有 `typescript/lib/tsc.js` +

@@ -34,10 +34,20 @@ import { dirname, join, resolve } from 'node:path'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const config = process.argv[2] ?? 'tsconfig.build.json'
 const scopeName = '@deepseek-ai'
-// The DSH source checkout these declarations were taken from. Override the
-// search by pointing DSH_NODE_MODULES (a node_modules directory) or DSH_HOME
-// (a checkout root) at another one.
-const checkout = 'D:/Program files/deepseek-harness'
+// Which DSH install's declarations to compile against is machine-specific, so no
+// path is baked in: point DSH_NODE_MODULES (a node_modules directory), DSH_HOME
+// (a checkout root) or DSH_CHECKOUT (a source checkout) at it, or write a
+// gitignored `.dsh-buildrc.json` next to package.json —
+// `{"checkout": "<source checkout>"}` or `{"nodeModules": "<node_modules dir>"}`.
+function localBuildConfig() {
+  try {
+    const parsed = JSON.parse(readFileSync(join(root, '.dsh-buildrc.json'), 'utf8'))
+    const pick = key => (typeof parsed[key] === 'string' && parsed[key] !== '' ? parsed[key] : undefined)
+    return { checkout: pick('checkout'), nodeModules: pick('nodeModules') }
+  } catch {
+    return {}
+  }
+}
 
 function isDirectory(path) {
   try { return readdirSync(path) !== null } catch { return false }
@@ -77,18 +87,26 @@ function windowsMounts(candidate) {
   return mounts
 }
 
+/** The DSH source checkout to borrow declarations from, when one is configured. */
+const configuredCheckout = process.env['DSH_CHECKOUT'] ?? localBuildConfig().checkout
+const checkoutCandidates = configuredCheckout ? [configuredCheckout, ...windowsMounts(configuredCheckout)] : []
+
 function findDepsRoots() {
   const candidates = []
   const envModules = process.env['DSH_NODE_MODULES']
   const envHome = process.env['DSH_HOME']
   if (envModules !== undefined && envModules !== '') candidates.push(envModules)
   if (envHome !== undefined && envHome !== '') candidates.push(join(envHome, 'node_modules'))
+  const local = localBuildConfig()
+  if (local.nodeModules !== undefined) candidates.push(local.nodeModules)
   candidates.push(join(root, 'node_modules'))
-  // The checkout these declarations were taken from outranks siblings —
-  // published @deepseek-ai packages may lag the checkout's type surface. Try it
-  // as written, then every /media mount that carries the same subtree, since
-  // the drive may move between machines.
-  for (const candidate of [checkout, ...windowsMounts(checkout)]) candidates.push(join(candidate, 'node_modules'))
+  // A source checkout outranks siblings — published @deepseek-ai packages may
+  // lag the checkout's type surface. Try it as written, then every /media mount
+  // that carries the same subtree, since the drive may move between machines.
+  const checkout = process.env['DSH_CHECKOUT'] ?? local.checkout
+  if (checkout !== undefined && checkout !== '') {
+    for (const candidate of [checkout, ...windowsMounts(checkout)]) candidates.push(join(candidate, 'node_modules'))
+  }
   // Siblings one and two levels up: the repo may sit inside a checkout or
   // next to other plugin projects on either level.
   const seen = new Set([root, dirname(root)])

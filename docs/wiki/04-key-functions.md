@@ -157,7 +157,7 @@
 
 - **位置**：`src/session-tools.ts:174-183`
 - **签名**：`joinTarget(ctx, args: { cwd?, workspaceId? }, exec): Promise<Workspace | undefined>`
-- **三级解析**（对应 README 轮次 D/E 的行为）：
+- **三级解析**（与 README「工具语义」的落点规则一致）：
 
   | 输入 | 行为 |
   |---|---|
