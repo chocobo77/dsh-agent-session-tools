@@ -60,7 +60,6 @@ try {
   if (-not $SkipTests) {
     # build.mjs leaves a vitest link in the local shim when a deps root was found.
     $vitest = Join-Path $root "node_modules\.bin\vitest.cmd"
-    if (-not (Test-Path $vitest)) { $vitest = "D:\Program files\deepseek-harness\node_modules\.bin\vitest.cmd" }
     if (-not (Test-Path $vitest)) { $vitest = "npx" }
     if ($vitest -eq "npx") { Invoke-Step "test (npx vitest run)" { npx vitest run --config vitest.config.ts } | Out-Null }
     else { Invoke-Step "test (vitest run)" { & $vitest run --config vitest.config.ts } | Out-Null }

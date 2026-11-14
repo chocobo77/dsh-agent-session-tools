@@ -29,7 +29,7 @@ describe('classifyErrorText', () => {
 
 describe('offenderOf', () => {
   it('extracts quoted edit targets and command heads', () => {
-    expect(offenderOf('old_string was not found in "D:\\code\\ED\\apps\\radar.html"')).toBe('D:\\code\\ED\\apps\\radar.html')
+    expect(offenderOf('old_string was not found in "/home/dev/app/index.html"')).toBe('/home/dev/app/index.html')
     expect(offenderOf('cannot read "D:\\x\\log.txt": binary file')).toBe('D:\\x\\log.txt')
     expect(offenderOf('code run failed (timeout): execution deadline reached')).toBe('')
   })

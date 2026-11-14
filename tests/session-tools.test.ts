@@ -142,12 +142,12 @@ describe('session_create', () => {
 
   it('joins the Workspace the calling session belongs to when no location is given', async () => {
     const { ctx, registered, recorded } = makeContext({
-      workspaces: [{ id: 'ws-1', title: 'DSH', path: 'D:\\code\\DSH', sessionIds: ['session-current'] }],
+      workspaces: [{ id: 'ws-1', title: 'Demo', path: 'D:\\work\\demo', sessionIds: ['session-current'] }],
     })
     apply(ctx)
     const value = await toolOf(registered, 'session_create').execute({}, execWithAgent(new AbortController().signal, undefined))
     expect(recorded.create).toEqual([{ workspaceId: 'ws-1' }])
-    expect(value).toEqual({ sessionId: 'session-created-1', workspaceId: 'ws-1', workspaceTitle: 'DSH', cwd: 'D:\\code\\DSH' })
+    expect(value).toEqual({ sessionId: 'session-created-1', workspaceId: 'ws-1', workspaceTitle: 'Demo', cwd: 'D:\\work\\demo' })
   })
 
   it('asks for no location at all when the calling session is in no Workspace', async () => {
@@ -202,7 +202,7 @@ describe('session_create', () => {
     const { ctx, registered, recorded } = makeContext()
     apply(ctx)
     await expect(toolOf(registered, 'session_create').execute(
-      { cwd: 'D:\\code\\DSH', workspaceId: 'ws-1' },
+      { cwd: 'D:\\work\\demo', workspaceId: 'ws-1' },
       execOf(new AbortController().signal),
     )).rejects.toThrow('session_create: pass workspaceId or cwd, not both')
     expect(recorded.create).toEqual([])
@@ -495,13 +495,13 @@ describe('session_create', () => {
     expect(tool.output.render({}, {
       sessionId: 'session-created-1',
       workspaceId: 'ws-1',
-      workspaceTitle: 'DSH',
-      cwd: 'D:\\code\\DSH',
+      workspaceTitle: 'Demo',
+      cwd: 'D:\\work\\demo',
       provider: 'prov-a',
       model: 'm1',
       reasoningEffort: 'high',
     })).toEqual([
-      { type: 'text', text: 'session created: session-created-1 (workspace: DSH, cwd: D:\\code\\DSH) (model: prov-a/m1, effort: high)' },
+      { type: 'text', text: 'session created: session-created-1 (workspace: Demo, cwd: D:\\work\\demo) (model: prov-a/m1, effort: high)' },
     ])
     expect(tool.output.render({}, { sessionId: 'session-created-1', provider: 'prov-a', model: 'm1' })).toEqual([
       { type: 'text', text: 'session created: session-created-1 (cwd: default, ungrouped) (model: prov-a/m1)' },
