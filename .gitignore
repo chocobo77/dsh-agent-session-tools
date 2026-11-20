@@ -4,6 +4,11 @@ dist/
 SHA256SUMS.txt
 .dsh-buildrc.json
 
-# local-only ops files (sensitive: internal push pipeline)
-docs/GITHUB-PUSH-PIPELINE.md
-scripts/push-github-api.mjs
+# GitHub 推送链路的脚本与文档随仓库跟踪（此前一度被 ignore 以求隐蔽，但清理前
+# 的旧 SHA 在 GitHub 上仍可能直达，隐蔽性已不成立；而 fresh clone 里没有这两个
+# 文件却让 README 的发布步骤无法照做）。跟踪的前提是：凭据不在仓库里——脚本
+# 运行时经 `git credential fill` 从 Windows 凭据管理器取 token，blob 扫描确认
+# 全部 ref（含 filter-branch 清理前的 refs/original）从未出现过 token 字面量。
+# 任何真的承载凭据的形态一律忽略：
+*.token
+*.credentials
