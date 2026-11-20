@@ -79,6 +79,7 @@
 | 1.3.0 | Workspace 归组：注入 `workspaceRegistry`，`joinTarget` 三级解析；无位置参数时沿用当前会话所属 Workspace | README「工具语义」 |
 | 1.4.0 | 新增只读工具 `session_error_audit`（`src/error-audit.ts`）；Code Wiki | git tag `v1.4.0` |
 | 1.4.1 | 修复：未知 `workspaceId` 显式报错（原静默降级）；`session_error_audit` 全异步化；pack 必含清单补 `error-audit.js` | git tag `v1.4.1` |
+| 1.4.2 | 修复：`session_error_audit` 归档 shadow 行按 `toolCallId` 去重、guard 拒绝与工具错误分账；pack.sh 哈希三路落空改逐路探测；推送链路文档与脚本入库 | git tag `v1.4.2` |
 
 ## 5. 已知注意事项
 
