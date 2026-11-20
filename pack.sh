@@ -56,10 +56,16 @@ step "build (tsc -p tsconfig.build.json)" node scripts/build.mjs tsconfig.build.
 
 # ── 测试 ─────────────────────────────────────────────────────────────────────
 if [ "$skip_tests" = false ]; then
-  # build.mjs 会在垫片里留下一个探测过可运行的 vitest；垫片缺失时退回 npx。
-  vitest="$root/node_modules/.bin/vitest"
-  if [ -x "$vitest" ]; then
-    step "test (vitest run)" "$vitest" run --config vitest.config.ts
+  # build.mjs 把可运行的 vitest 包本体垫进 node_modules/vitest；win32 下它只写 .bin/vitest.cmd
+  # （薄包装），MSYS bash 里 .bin 下的 Windows 包装脚本不可执行、npx 也解析不到它。
+  # 所以优先用 node 直接跑包入口 vitest.mjs；.bin/vitest 只在非 win32 垫片（build.mjs 链接
+  # 探测过可运行的那个）或真实安装时存在；都没有才退回 npx。
+  vitest_entry="$root/node_modules/vitest/vitest.mjs"
+  vitest_bin="$root/node_modules/.bin/vitest"
+  if [ -f "$vitest_entry" ]; then
+    step "test (vitest run)" node "$vitest_entry" run --config vitest.config.ts
+  elif [ -x "$vitest_bin" ]; then
+    step "test (vitest run)" "$vitest_bin" run --config vitest.config.ts
   else
     step "test (npx vitest run)" npx vitest run --config vitest.config.ts
   fi
@@ -108,13 +114,28 @@ fi
 echo "    entries: $(wc -l <<< "$entries")"
 
 # ── SHA256 ───────────────────────────────────────────────────────────────────
-hash="$(sha256sum "$tgz" | awk '{print $1}')"
+# Three hash paths, probed rather than tried: MSYS bash ships neither sha256sum
+# nor openssl on every install, and under `set -o pipefail` a missing first
+# choice would abort the script instead of falling through. node is required by
+# this project anyway, so it is the last and always-available option.
+hash=""
+if command -v sha256sum >/dev/null 2>&1; then
+  hash="$(sha256sum "$tgz" | awk '{print $1}')"
+elif command -v openssl >/dev/null 2>&1; then
+  hash="$(openssl dgst -sha256 -r "$tgz" | cut -d' ' -f1)"
+else
+  hash="$(node -e 'const c=require("crypto"),f=require("fs");console.log(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$tgz")"
+fi
+if [ -z "$hash" ]; then
+  echo "无法计算 sha256（sha256sum / openssl / node 都不可用）" >&2
+  exit 1
+fi
 printf '%s  %s\n' "$hash" "$tgz_name" > "$out_dir/SHA256SUMS.txt"
 
 full="$(cd "$(dirname "$tgz")" && pwd)/$(basename "$tgz")"
 echo
 echo "==> 完成"
-echo "    tarball: $full ($(( $(stat -c%s "$tgz") / 1024 )) KB)"
+echo "    tarball: $full ($(( $(wc -c < "$tgz") / 1024 )) KB)"
 echo "    sha256 : $hash"
 echo
 echo "安装方式（需重启 DSH）："
