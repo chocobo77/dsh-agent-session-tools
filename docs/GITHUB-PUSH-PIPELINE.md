@@ -215,9 +215,11 @@ for (const sha of shas) {
   for (const line of raw) {
     const m = line.match(/^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z])\t(.+)$/)
     if (!m) throw new Error('unparsed diff-tree line: ' + line)
-    const [, , newMode, , newSha, status, p] = m
+    const [, srcMode, , , newSha, status, p] = m
     if (status === 'D' || /^0+$/.test(newSha)) {
-      entries.push({ path: p, mode: newMode, type: 'blob', sha: null })
+      // 删除条目要带**旧 mode**：GitHub 文档的删除写法是 sha:null 配文件原有 mode；
+      // 删除行的新 mode 是 000000，不在合法 mode 集里，会被 trees 端点 422 拒掉。
+      entries.push({ path: p, mode: srcMode, type: 'blob', sha: null })
     } else {
       const blob = await api('POST', '/git/blobs', {
         content: git(['show', `${sha}:${p}`]).toString('base64'),
@@ -241,6 +243,15 @@ for (const sha of shas) {
   parent = commit.sha
 }
 
+// --- 2.5) 移动分支【之前】先验证 tree ---
+// 重放出的 tip 已经是远端对象；tree 与本地 HEAD 不一致就直接失败——此时分支 ref
+// 还没动，远端保持原状。（先移 ref 再验证的旧顺序会在失配时把远端分支留在坏
+// commit 上，还顺手把它写进 push map。）
+const localTree = gitText(['rev-parse', 'HEAD^{tree}']).trim()
+const remoteHead = await api('GET', `/git/commits/${parent}`)
+if (remoteHead.tree.sha !== localTree) throw new Error(`tree mismatch: ${remoteHead.tree.sha} != ${localTree}`)
+console.log('tree verified:', localTree)
+
 // --- 3) 移动分支 ---
 // 首次推送（或远端基线不是本地对象）时根提交没有 parent，只能 force 到重放出来的 tip：
 // 种子提交因此变成游离对象，分支历史里只有本地提交。常规增量推送仍然 force:false，
@@ -261,14 +272,20 @@ const fresh = [...map].map(([local, remote]) => `${local}\t${remote}`)
 const kept = previous.filter(line => !map.has(line.split('\t')[0]))
 writeFileSync(mapFile, [...kept, ...fresh].slice(-100).join('\n') + '\n')
 console.log(`push map saved: 本次 ${map.size} 个提交，文件里共 ${Math.min(kept.length + fresh.length, 100)} 条（下次按它算增量）`)
-const remoteHead = await api('GET', `/git/commits/${parent}`)
-const localTree = gitText(['rev-parse', 'HEAD^{tree}']).trim()
-if (remoteHead.tree.sha !== localTree) throw new Error(`tree mismatch: ${remoteHead.tree.sha} != ${localTree}`)
-console.log('tree verified:', localTree)
 
 // --- 4) 可选：annotated tag + release + 资产（重复运行时是「重新发版」而非报错）---
 if (TAG) {
-  const tagCommit = map.get(gitText(['rev-parse', `${TAG}^{}`]).trim()) ?? parent
+  const tagLocal = gitText(['rev-parse', `${TAG}^{}`]).trim()
+  // tag 必须落在**它自己的 commit** 上：map 只装本次重放，旧 tag 的映射在刚写好的
+  // map 文件里（kept+fresh）。查不到就失败——`?? parent` 的旧回退会把上一轮推过
+  // 的 tag 静默移到本次 tip（HEAD），release 资产与 commit 错位；100 条窗口把旧
+  // 映射驱逐后更是必然踩中。宁可停机重放，不可错发版。
+  const persisted = new Map(
+    readFileSync(mapFile, 'utf8').split('\n').filter(Boolean)
+      .map(line => { const [local, remote] = line.split('\t'); return [local, remote] }),
+  )
+  const tagCommit = persisted.get(tagLocal)
+  if (tagCommit === undefined) throw new Error(`tag ${TAG} 指向 ${tagLocal}，不在 push map（可能已被 100 条窗口驱逐）；拒绝把 tag 移到 HEAD`)
   const tagObj = await api('POST', '/git/tags', {
     tag: TAG, message: RELEASE_NAME, object: tagCommit, type: 'commit',
     tagger: { name: me.login, email: `${me.login}@users.noreply.github.com`, date: new Date().toISOString() },
@@ -317,7 +334,6 @@ if (TAG) {
     }
   }
 }
-
 ```
 
 > Windows 提示：`GIT_BIN` 建议用 `where git` 的绝对路径（如 `C:\Program Files\Git\cmd\git.exe`）。
