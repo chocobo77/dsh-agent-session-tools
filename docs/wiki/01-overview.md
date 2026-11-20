@@ -30,6 +30,9 @@
   之前拒绝，不猜基准目录）；
 - 只给 `cwd` 时先按路径反查 Workspace（`resolveByPath`），命中则自动归组；
   不替调用方新建 Workspace；
+- 显式 `workspaceId` 未注册 → 直接报错 `workspace "…" not found (workspace/not-found)`，
+  **不创建会话**（`registry.get` 对未知 id 返回 undefined 而非抛错，插件把它转成显式
+  失败，不静默降级成默认目录的未归组会话）；
 - 模型/effort 的**可命名错误**（歧义模型、目录里没有、effort 不提供、`provider`
   缺 `model`）全部发生在 `create` **之前**，失败不残留会话。
 
@@ -45,8 +48,8 @@
 - `exec.signal` 透传给宿主 `prompt(request, signal)`，注入可随工具调用取消。
 
 ### session_error_audit（v1.4.0 新增）
-- 递归扫描 `~/.dsh/sessions/<workspace>/<session>/*.jsonl[.zstd]`，用 Node 原生
-  `zstdDecompressSync` 解码 zstd 帧；
+- 递归扫描 `~/.dsh/sessions/<workspace>/<session>/*.jsonl[.zstd]`；文件读取与 zstd
+  解码都走异步 API（解码在 libuv 线程池），不阻塞宿主事件循环；
 - 逐行解析 JSONL 事件（`session` / `tool/call` / `tool/result`），对 `isError` 的
   工具结果做**分类**（edit-mismatch、edit-stale、timeout、syntax、network 等 10 类）
   与**归因**（错误文本中引号里的文件路径 / 命令头）；
@@ -75,6 +78,7 @@
 | 1.2.0 | 模型与思考强度继承（`model`/`provider`/`reasoningEffort`）；测试纳入类型检查范围 | git tag `v1.2.0` |
 | 1.3.0 | Workspace 归组：注入 `workspaceRegistry`，`joinTarget` 三级解析；无位置参数时沿用当前会话所属 Workspace | README「工具语义」 |
 | 1.4.0 | 新增只读工具 `session_error_audit`（`src/error-audit.ts`）；Code Wiki | git tag `v1.4.0` |
+| 1.4.1 | 修复：未知 `workspaceId` 显式报错（原静默降级）；`session_error_audit` 全异步化；pack 必含清单补 `error-audit.js` | git tag `v1.4.1` |
 
 ## 5. 已知注意事项
 

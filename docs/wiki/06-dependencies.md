@@ -65,7 +65,7 @@ graph TD
 
 | 项 | 要求 | 原因 |
 |---|---|---|
-| Node.js | `>= 22.19.0`（`engines`） | `zstdDecompressSync`（error-audit）与较新的语法目标（`target: es2024`） |
+| Node.js | `>= 22.19.0`（`engines`） | Node 原生 zstd（error-audit 异步解码）与较新的语法目标（`target: es2024`） |
 | 运行位置 | 仅 DSH Host 侧 | 工具注册进 `ctx.tools`；无 Client 面 |
 
 **profile 组合前置**（README「依赖与前置条件」）：
@@ -84,17 +84,18 @@ graph TD
 先把需要的包**链接**进本目录 `node_modules`（垫片，gitignore），再跑
 `tsc -p <config>`。
 
-### 3.1 deps root 查找顺序（`findDepsRoots`，`build.mjs:80-107`）
+### 3.1 deps root 查找顺序（`findDepsRoots`）
 
 | 优先级 | 来源 | 说明 |
 |---|---|---|
 | 1 | `$DSH_NODE_MODULES` | 直接指定一个 node_modules 目录 |
 | 2 | `$DSH_HOME/node_modules` | 指定一个 DSH checkout 根 |
-| 3 | `./node_modules` | 上次运行留下的垫片，或真实 install |
-| 4 | `.dsh-buildrc.json`（gitignore）：`{"checkout": …}` 或 `{"nodeModules": …}`，也可用 `$DSH_CHECKOUT` | 机器路径不入库；checkout 优先于兄弟项目——published 包的类型面可能落后 |
-| 5 | 兄弟项目：上一级与上两级目录里每个 `*/node_modules` | 插件可能与其他插件项目并排放 |
+| 3 | `.dsh-buildrc.json` 的 `nodeModules` 字段 | gitignored 本地配置，放在 package.json 旁 |
+| 4 | `./node_modules` | 上次运行留下的垫片，或真实 install |
+| 5 | **配置的 DSH checkout**：`$DSH_CHECKOUT` 或 rc 的 `checkout` 字段（按字面路径 + `/media` 挂载翻译） | 机器路径不入库；checkout 优先于兄弟项目——published 包的类型面可能落后；未配置则跳过该级 |
+| 6 | 兄弟项目：上一级与上两级目录里每个 `*/node_modules` | 插件可能与其他插件项目并排放 |
 
-**资格判定**（`qualifies`，`:55-61`）：目录里有 `typescript/lib/tsc.js` +
+**资格判定**（`qualifies`）：目录里有 `typescript/lib/tsc.js` +
 `@types/node/package.json`，且 `@deepseek-ai/cordis/package.json` 存在（published
 布局）**或** 同级的 `vendor/cordis/package.json` 存在（checkout 布局）。
 
@@ -111,38 +112,43 @@ graph TD
 布局改了四处（README §构建与打包）：
 
 1. **checkout 候选按字面路径再试一次**：Windows 没有 `/media`，只做挂载翻译会
-   永远落空（`build.mjs:91` —— `[checkout, ...windowsMounts(checkout)]`）；
-2. **`@types` / `@deepseek-ai` 逐条目链接，不整目录链接**（`shimTree`，`:165-185`）：
+   永远落空（`checkoutCandidates` = `[configuredCheckout, ...windowsMounts(configuredCheckout)]`）；
+2. **`@types` / `@deepseek-ai` 逐条目链接，不整目录链接**（`shimTree`）：
    pnpm 的条目本身是相对符号链接，整目录 junction 会让它们指向错误位置
    （表现为 `Cannot find type definition file for 'node'`）；
-3. **checkout 布局按 manifest `name` 扫描**（`shimCheckoutScope`，`:248-263`）：
+3. **checkout 布局按 manifest `name` 扫描**（`shimCheckoutScope`）：
    遍历 `packages/<group>/<name>` 与 `vendor/<name>`，读各目录 `package.json`
    的 `name`，把 `@deepseek-ai/<name>` 链到对应目录——checkout 根的
    `node_modules/@deepseek-ai` 只有根包依赖的几个，插件要用的
    `dsh-tools` / `dsh-api-session-controller` / `dsh-session` 不在里面；
 4. **Windows `.bin` 不整目录链接**：写一个 `vitest.cmd` 指向借用的
-   `vitest/vitest.mjs`（`:203-214`），`npm test` 直接可用。非 Windows 则把候选
-   `.bin/vitest` 用**一次单断言冒烟运行**探测后再 symlink（`:216-240`）——
+   `vitest/vitest.mjs`，`npm test` 直接可用。非 Windows 则把候选
+   `.bin/vitest` 用**一次单断言冒烟运行**探测后再 symlink——
    跨 OS 借来的 vitest 可能在加载原生 bundler 绑定时才炸。
 
 其余细节：
 
 - 垫片**只增不改**：已解析的条目不动（真实 `npm install` 优先），仅替换指向
-  别处的失效链接（`shimLink`，`:136-146`）；
-- `vitest` **包本体**也被链接（`:194-195`，从多个 deps root 里探测携带者），
+  别处的失效链接（`shimLink`）；
+- `vitest` **包本体**也被链接（从多个 deps root 里探测携带者），
   否则 `tsc` 无法类型检查 `tests/`（vitest 的 import 会解析失败）；
-- `@standard-schema` 一起链接（`:191`，dsh-tools 的 schema DSL 依赖）；
+- `@standard-schema` 一起链接（dsh-tools 的 schema DSL 依赖）；
 - 编译器可用 `$DSH_TSC` 指定（默认垫片里的 `typescript/lib/tsc.js`）；
-- 最后校验垫片可用（`providesNodeModules`，`:289-292`）再 `spawnSync` tsc，
+- 最后校验垫片可用（`providesNodeModules`）再 `spawnSync` tsc，
   退出码透传。
 
-### 3.4 环境变量速查
+### 3.4 配置来源速查
 
-| 变量 | 作用 |
+| 方式 | 作用 |
 |---|---|
 | `DSH_NODE_MODULES` | 直接指定 node_modules 目录（最高优先级） |
 | `DSH_HOME` | 指定 DSH checkout 根（用其 node_modules） |
+| `DSH_CHECKOUT` | 指定 DSH 源码 checkout（借用其 `packages/` / `vendor/` 的类型与包） |
 | `DSH_TSC` | 显式 tsc.js 路径（默认用垫片里的） |
+
+> 不想用环境变量时，gitignored 的 `.dsh-buildrc.json`（package.json 旁）可写
+> `{"checkout": …}` 与/或 `{"nodeModules": …}`，等价于 `DSH_CHECKOUT` /
+> `DSH_NODE_MODULES`。
 
 ## 4. 分发与安装链路
 

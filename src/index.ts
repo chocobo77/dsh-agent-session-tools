@@ -1,6 +1,7 @@
 /**
- * Host-only tool bundle: `session_create` and `session_inject` over the Host
- * Session Controller. No Client surface, no Config, no state of its own.
+ * Host-only tool bundle: `session_create` and `session_inject` wrap the Host
+ * Session Controller; `session_error_audit` is a read-only scan of the local
+ * session logs. No Client surface, no Config, no state of its own.
  * @module dsh-agent-session-tools
  */
 
@@ -12,7 +13,8 @@ export const name = 'agent-session-tools'
 export const inject = ['tools', 'sessionController', 'workspaceRegistry']
 
 /**
- * Register both tools for the plugin lifetime. `ctx.tools.register` hands back
+ * Register the Session tools and the error audit for the plugin lifetime.
+ * `ctx.tools.register` hands back
  * its exact disposer, which `ctx.effect` runs when this entry unloads.
  * @param ctx - the plugin context.
  */

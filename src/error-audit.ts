@@ -7,25 +7,17 @@
  * @module dsh-agent-session-tools/error-audit
  */
 
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdir, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { zstdDecompressSync } from 'node:zlib'
+import { zstdDecompress } from 'node:zlib'
+import { promisify } from 'node:util'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Context } from '@deepseek-ai/cordis'
+import { describeFailure } from './checks.ts'
 
-/**
- * The zstd helpers are no longer needed: Node's native `zstdDecompressSync`
- * decodes the concatenated frames directly.
- */
-
-/** One extracted error, already truncated: detail lives on disk, not here. */
-export interface ErrorRecord {
-  cwd: string
-  tool: string
-  taskHead: string
-  text: string
-}
+/** The async zstd decode runs on libuv's threadpool, keeping the Host event loop free. */
+const zstdDecompressAsync = promisify(zstdDecompress) as (bytes: Buffer) => Promise<Buffer>
 
 /** Validated audit arguments after defaulting. */
 export interface ErrorAuditInput {
@@ -82,27 +74,30 @@ export function defaultSessionsRoot(): string {
 }
 
 /**
- * Decode one session log into its line array. Node's native zstd decompressor
- * handles the file's concatenated frames (independent header frame first) in
- * one synchronous pass; the header line is itself a JSONL record, so no
- * special framing is needed downstream.
+ * Decode one session log into its line array. The decompression runs on
+ * libuv's threadpool, so a large artifact does not stall the Host event loop;
+ * the file's concatenated frames (independent header frame first) decode in
+ * one pass, and the header line is itself a JSONL record, so no special
+ * framing is needed downstream.
  * @param bytes - the complete `.jsonl.zstd` file bytes.
  * @returns the decoded lines; empty for a corrupt or unreadable artifact.
  */
-export function decodeSessionLines(bytes: Buffer): string[] {
+export async function decodeSessionLines(bytes: Buffer): Promise<string[]> {
   if (bytes.length === 0) return []
   try {
-    return zstdDecompressSync(bytes).toString('utf8').split('\n')
+    const decoded = await zstdDecompressAsync(bytes)
+    return decoded.toString('utf8').split('\n')
   } catch {
     return [] // corrupt artifact: skip, do not fail the audit
   }
 }
 
 /**
- * Run the audit over one sessions directory. Streaming per file, bounded:
- * error text and task heads are truncated at extraction, so memory stays
- * flat and only the summary is returned.
- * @param root - the sessions root (one subdirectory per session).
+ * Run the audit over one sessions directory. One directory level and one file
+ * at a time, with every read and the zstd decode off the main thread; error
+ * text is truncated at extraction, so only the bounded summary is returned.
+ * @param root - the sessions root (workspace directories, each holding
+ *   per-session directories).
  * @param input - the validated filter arguments.
  * @returns the bounded summary text.
  */
@@ -113,15 +108,15 @@ export async function auditSessions(root: string, input: ErrorAuditInput): Promi
   const offenders = new Map<string, number>()
   let total = 0
   let scanned = 0
-  for (const workspace of readdirSync(root, { withFileTypes: true })) {
+  for (const workspace of await readdir(root, { withFileTypes: true })) {
     if (!workspace.isDirectory()) continue
     const workspaceDir = join(root, workspace.name)
-    for (const session of readdirSync(workspaceDir, { withFileTypes: true })) {
+    for (const session of await readdir(workspaceDir, { withFileTypes: true })) {
       if (!session.isDirectory()) continue
       const sessionDir = join(workspaceDir, session.name)
-      for (const file of readdirSync(sessionDir)) {
+      for (const file of await readdir(sessionDir)) {
         if (!file.endsWith('.jsonl.zstd') && !file.endsWith('.jsonl')) continue
-        const bytes = readFileSync(join(sessionDir, file))
+        const bytes = await readFile(join(sessionDir, file))
         const lines = file.endsWith('.jsonl.zstd') ? await decodeSessionLines(bytes) : bytes.toString('utf8').split('\n')
         const record = scanLines(lines, sinceMs)
         if (record === undefined) continue
@@ -144,7 +139,7 @@ export async function auditSessions(root: string, input: ErrorAuditInput): Promi
   return renderSummary(total, scanned, categories, perSession, offenders, input.top)
 }
 
-/** Scan one decoded log: cwd, last user task head per seq, and the error records. */
+/** Scan one decoded log: cwd, tool names per call id, and the error records. */
 function scanLines(lines: readonly string[], sinceMs: number): { cwd: string; errors: readonly string[]; offenders: readonly string[] } | undefined {
   let cwd = '?'
   const callNames = new Map<string, string>()
@@ -256,7 +251,14 @@ export function auditSessionTool(ctx: Context): ReturnType<typeof defineTool> {
     },
     async execute(args) {
       const input = parseAuditArgs(args)
-      const summary = await auditSessions(defaultSessionsRoot(), input)
+      let summary: string
+      try {
+        summary = await auditSessions(defaultSessionsRoot(), input)
+      } catch (error) {
+        // A missing or unreadable sessions root should fail as a tool result,
+        // not as a raw filesystem exception.
+        throw describeFailure('session_error_audit', error)
+      }
       return { summary }
     },
   })

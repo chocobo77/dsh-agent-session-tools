@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
 .SYNOPSIS
   一键打包 dsh-agent-session-tools，产出可 `dsh plugin add` 的 tgz。
@@ -6,7 +6,8 @@
   - 检查 Node.js 版本
   - 用 scripts/build.mjs 构建（无需本地安装依赖：脚本把 typescript 与
     @deepseek-ai 类型包从 DSH checkout / 兄弟项目链接进本目录 node_modules
-    垫片；可用 $DSH_NODE_MODULES 或 $DSH_HOME 指定来源）
+    垫片；可用 $DSH_NODE_MODULES / $DSH_HOME / $DSH_CHECKOUT 或
+    .dsh-buildrc.json 指定来源）
   - 跑一遍 vitest（可用 -SkipTests 跳过）
   - npm pack 到 release/，校验 tarball 只含运行文件
   - 生成 SHA256SUMS.txt 并打印安装命令
@@ -86,7 +87,7 @@ try {
   foreach ($item in @("package/package.json", "package/cordis.patch.yml", "package/cordis.yml")) {
     if (-not ($entries -contains $item)) { throw "tarball 缺少 $item。" }
   }
-  foreach ($item in @("package/dist/index.js", "package/dist/session-tools.js", "package/dist/checks.js")) {
+  foreach ($item in @("package/dist/index.js", "package/dist/session-tools.js", "package/dist/checks.js", "package/dist/error-audit.js")) {
     if (-not ($entries -contains $item)) { throw "tarball 缺少 $item，构建可能失败。" }
   }
   $forbidden = @($entries | Where-Object { $_ -match '^package/(src|tests|scripts|node_modules|release)/' })

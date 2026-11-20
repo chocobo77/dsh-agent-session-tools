@@ -207,7 +207,8 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
     `workspaceId` 会把会话挂到 Workspace 上**（`commands.ts:133` 用 `workspace.path` 当 cwd，
     `:147-157` 才 `attachSession`）。只给 `cwd` 建出来的会话不属于任何 Workspace，UI 就把它排在
     所有分组之外（“未分类”）。所以插件按这个顺序决定位置（`joinTarget`）：
-    1. 显式 `workspaceId` → 直接透传（宿主校验，未知 id 报 `workspace/not-found`）；
+    1. 显式 `workspaceId` → 先经注册表确认存在（`registry.get` 对未知 id 返回 undefined
+       而非抛错），未知 id 由插件直接报 `workspace/not-found`，**不创建会话**；
     2. 显式 `cwd` → `workspaceRegistry.resolveByPath(cwd)`，命中就用它的 `workspaceId`（自动归组），
        **不**替调用方新建 Workspace（那会在用户的分组列表里留下条目）；没命中就按纯 `cwd` 创建，
        渲染里明说 `ungrouped`；
@@ -297,7 +298,8 @@ pack.cmd                   # Windows 入口；等价于 .\pack.ps1 / ./pack.sh
   词表来自本机会话历史里真实反复出现的失败，用来验证“加了守卫之后该类错误是否下降”。
 - **参数**：`since`（ISO 8601 下界，非 ISO 直接拒）、`cwd_contains`（按会话工作目录子串过滤）、
   `top`。损坏或读不了的日志文件**跳过而不是抛错**（`decodeSessionLines` 返回空数组）。
-- 只用 `node:fs` / `node:zlib`（原生 `zstdDecompressSync`，一次同步解出拼接帧），不碰宿主服务。
+- 只用 `node:fs` / `node:zlib`（文件读取与 zstd 解码走异步 API，解码在 libuv
+  线程池上，一次解出拼接帧，不阻塞宿主事件循环），不碰宿主服务。
 
 ## 依赖与前置条件
 
@@ -348,6 +350,7 @@ dsh plugin --profile <test-profile> add <release/dsh-agent-session-tools-<versio
 | 1.2.0 | 模型选择 `model` / `provider` / `reasoningEffort`，默认继承调用方当前 route 与思考强度 |
 | 1.3.0 | Workspace 归组：注入 `workspaceRegistry`，不带位置参数时沿用当前会话所属的 Workspace |
 | 1.4.0 | 只读工具 `session_error_audit`（有界摘要）；Code Wiki 8 页 |
+| 1.4.1 | 修复：未知 `workspaceId` 显式报 `workspace/not-found`（原静默降级为默认会话）；`session_error_audit` 全异步化；pack 必含清单补 `error-audit.js` |
 
 行为语义以上文「工具语义」与「兼容基线」为准。离线检查：`npm test`（`tests/` 三个文件）、
 `node scripts/build.mjs tsconfig.typecheck.json`。

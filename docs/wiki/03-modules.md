@@ -43,7 +43,8 @@ graph TD
     INDEX["src/index.ts"] --> ST["src/session-tools.ts"]
     INDEX --> EA["src/error-audit.ts"]
     ST --> CK["src/checks.ts"]
-    EA -.->|"不依赖 checks：只用 node 内置模块"| NODE["node:fs / os / path / zlib"]
+    EA --> CK
+    EA -.-> NODE["node:fs / os / path / zlib"]
     ST --> T1["defineTool（@deepseek-ai/dsh-tools）"]
     EA --> T1
     CK --> TYPES["仅类型：ModelCatalog（dsh-api-session-controller）"]
@@ -55,7 +56,8 @@ graph TD
 - `checks.ts` **不 import 任何 @deepseek-ai 运行时代码**（只有 `node:fs`、
   `node:path`、`node:crypto` 与一个类型导入），因此可以在任何 vitest 环境
   直接测试；
-- `error-audit.ts` 与会话工具**互相独立**，只共享 `defineTool`；
+- `error-audit.ts` 与会话工具逻辑独立（只共享 `defineTool`），从 `checks.ts` 复用
+  `describeFailure` 包装文件系统错误；
 - `index.ts` 是唯一的装配点，不含逻辑。
 
 ## 3. 各文件职责
@@ -79,10 +81,10 @@ graph TD
 | `lookupCatalog(ctx)` | `:70-76` | 每 call 最多取一次模型目录；目录故障不阻断不需要它的选择 |
 | `resolveSelection(ctx, args, exec)` | `:91-146` | 合并"调用方模型参数 × 当前会话选择"为唯一 SelectionChoice；可命名错误全部在 create 前抛出 |
 | `resolveProvider(model, ctx)` | `:149-155` | 目录不可用时显式报错，绝不猜路由 |
-| `joinTarget(ctx, args, exec)` | `:174-183` | 三级归组：workspaceId → cwd 反查 → 当前会话所属 Workspace |
-| `createSessionTool(ctx)` | `:185-300` | `session_create` 全量定义 |
-| `injectSessionTool(ctx)` | `:307-406` | `session_inject` 全量定义；闭包持有 `inFlight` 与 `settled` 两张表 |
-| `InjectReceipt` | `:409-414` | 注入回执形状 |
+| `joinTarget(ctx, args, exec)` | `:171-191` | 三级归组：workspaceId → cwd 反查 → 当前会话所属 Workspace；未注册的 workspaceId 显式抛 `workspace/not-found` |
+| `createSessionTool(ctx)` | `:197-312` | `session_create` 全量定义 |
+| `injectSessionTool(ctx)` | `:319-418` | `session_inject` 全量定义；闭包持有 `inFlight` 与 `settled` 两张表 |
+| `InjectReceipt` | `:421-426` | 注入回执形状 |
 
 ### src/error-audit.ts —— 错误审计（分析层）
 
@@ -90,16 +92,15 @@ graph TD
 
 | 导出/内部函数 | 行号 | 职责 |
 |---|---|---|
-| `ErrorRecord` | `:23-28` | 预留接口，当前未被运行时路径引用 |
-| `ErrorAuditInput` / `parseAuditArgs` | `:31-49` | 参数默认与钳制：`top` 1–5（默认 3）；`since` 必须 ISO 8601 |
-| `classifyErrorText(text)` | `:57-68` | 顺序敏感的分类词表 → 10 个稳定类别 |
-| `offenderOf(text)` | `:71-77` | 从错误文本提取引号内文件路径或命令头 |
-| `defaultSessionsRoot()` | `:80-82` | `join(homedir(), '.dsh', 'sessions')` |
-| `decodeSessionLines(bytes)` | `:92-99` | 原生 zstd 同步解码；损坏→空数组（跳过不失败） |
-| `auditSessions(root, input)` | `:109-145` | 三层目录遍历 + 聚合 + 渲染 |
-| `scanLines(lines, sinceMs)` | `:148-186` | 单文件事件解析（内部） |
-| `plainText` / `topEntries` / `renderSummary` | `:189-227` | 内容拼接 / 排序（计数降序、键升序保确定性）/ 有界渲染（内部） |
-| `auditSessionTool(ctx)` | `:237-263` | `session_error_audit` 全量定义；`ctx` 目前未用（参数占位保持服务对齐） |
+| `ErrorAuditInput` / `parseAuditArgs` | `:23-42` | 参数默认与钳制：`top` 1–5（默认 3）；`since` 必须 ISO 8601 |
+| `classifyErrorText(text)` | `:49-60` | 顺序敏感的分类词表 → 10 个稳定类别 |
+| `offenderOf(text)` | `:63-69` | 从错误文本提取引号内文件路径或命令头 |
+| `defaultSessionsRoot()` | `:72-74` | `join(homedir(), '.dsh', 'sessions')` |
+| `decodeSessionLines(bytes)` | `:85-96` | zstd 异步解码（线程池）；损坏→空数组（跳过不失败） |
+| `auditSessions(root, input)` | `:104-139` | 三层目录遍历（异步 fs）+ 聚合 + 渲染 |
+| `scanLines(lines, sinceMs)` | `:143-180` | 单文件事件解析（内部） |
+| `plainText` / `topEntries` / `renderSummary` | `:184-222` | 内容拼接 / 排序（计数降序、键升序保确定性）/ 有界渲染（内部） |
+| `auditSessionTool(ctx)` | `:232-265` | `session_error_audit` 全量定义；`execute` 经 `describeFailure` 包装文件系统错误；`ctx` 目前未用（参数占位保持服务对齐） |
 
 ### src/checks.ts —— 共享校验（纯函数层）
 

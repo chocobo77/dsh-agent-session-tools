@@ -154,7 +154,7 @@ sequenceDiagram
 graph LR
     A["parseAuditArgs<br/>since ISO 校验 / top 钳 1-5"] --> B["auditSessions<br/>遍历 root/工作区/会话/文件"]
     B --> C{"文件类型"}
-    C -->|".jsonl.zstd"| D["decodeSessionLines<br/>zstdDecompressSync<br/>损坏→空数组跳过"]
+    C -->|".jsonl.zstd"| D["decodeSessionLines<br/>zstd 异步解码（线程池）<br/>损坏→空数组跳过"]
     C -->|".jsonl"| E["按行 utf8 切分"]
     D --> F["scanLines<br/>逐行 JSON.parse"]
     E --> F
@@ -192,6 +192,8 @@ graph LR
 
 ## 9. 错误处理统一约定
 
+- `workspaceId` 未注册时在 `joinTarget` 显式抛 `workspace/not-found`，不创建会话
+  （`registry.get` 对未知 id 返回 undefined 而不是抛错——插件必须自己把它转成失败）；
 - 所有宿主调用失败经 `describeFailure(tool, error)` 包装：`"<tool名>: <宿主消息> (<code>)"`，
   `code` 来自 `codeOf()` 对 `error.code` 的宽容读取；
 - `selectModel` 在会话已创建之后失败时，错误文本**点名已创建的 sessionId**：

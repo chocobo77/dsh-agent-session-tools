@@ -198,6 +198,17 @@ describe('session_create', () => {
     expect(value).toEqual({ sessionId: 'session-created-1', workspaceId: 'ws-9', workspaceTitle: 'Nine', cwd: 'D:\\named' })
   })
 
+  it('refuses an unknown workspaceId instead of degrading to a default-cwd Session', async () => {
+    const { ctx, registered, recorded } = makeContext({ workspaces: [] })
+    apply(ctx)
+    await expect(toolOf(registered, 'session_create').execute(
+      { workspaceId: 'ws-missing' },
+      execOf(new AbortController().signal),
+    )).rejects.toThrow('session_create: workspace "ws-missing" not found (workspace/not-found)')
+    expect(recorded.create).toEqual([])
+    expect(recorded.selectModel).toEqual([])
+  })
+
   it('refuses cwd together with workspaceId before the Host is asked', async () => {
     const { ctx, registered, recorded } = makeContext()
     apply(ctx)

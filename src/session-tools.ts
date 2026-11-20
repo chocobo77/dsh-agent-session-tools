@@ -155,11 +155,6 @@ async function resolveProvider(model: string, ctx: Context): Promise<string> {
 }
 
 /**
- * `session_create`: one ordinary Session for a new conversation.
- * @param ctx - the plugin context; only `sessionController` is read, at call time.
- * @returns the registry-ready definition.
- */
-/**
  * The Workspace the new Session should join, or undefined to create it
  * unattached. `session.create` takes `workspaceId` or `cwd`, and only the first
  * attaches the Session to a Workspace: a cwd-only Session belongs to no group,
@@ -170,6 +165,8 @@ async function resolveProvider(model: string, ctx: Context): Promise<string> {
  * @param args - the validated location arguments.
  * @param exec - tool execution context, whose Agent is the calling Session.
  * @returns the Workspace to join, or undefined when none matches.
+ * @throws when an explicitly named workspaceId is not registered, so an unknown
+ *   id cannot silently degrade into a default-cwd ungrouped Session.
  */
 async function joinTarget(
   ctx: Context,
@@ -177,11 +174,26 @@ async function joinTarget(
   exec: { readonly agent?: unknown },
 ): Promise<Workspace | undefined> {
   const registry = ctx.workspaceRegistry
-  if (args.workspaceId !== undefined) return registry.get(args.workspaceId as WorkspaceId)
+  if (args.workspaceId !== undefined) {
+    const named = registry.get(args.workspaceId as WorkspaceId)
+    if (named === undefined) {
+      // The registry's get answers undefined for an unknown id (it never
+      // throws), so this check is what keeps the documented failure
+      // "the named Workspace does not exist" instead of a silent fallback
+      // to a default-cwd Session.
+      throw new Error(`session_create: workspace ${JSON.stringify(args.workspaceId)} not found (workspace/not-found)`)
+    }
+    return named
+  }
   if (args.cwd !== undefined) return await registry.resolveByPath(checkedCwd(args.cwd))
   return ownerWorkspace(registry.list(), (exec.agent as { id?: string } | undefined)?.id)
 }
 
+/**
+ * `session_create`: one ordinary Session for a new conversation.
+ * @param ctx - the plugin context; only `sessionController` is read, at call time.
+ * @returns the registry-ready definition.
+ */
 export function createSessionTool(ctx: Context) {
   return defineTool({
     name: 'session_create',

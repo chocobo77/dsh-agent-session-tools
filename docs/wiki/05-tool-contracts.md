@@ -22,7 +22,8 @@
 
 ### 归组决策（`joinTarget`）
 
-1. 显式 `workspaceId` → 直接透传；
+1. 显式 `workspaceId` → `registry.get`；**未注册 → 直接报错** `workspace "…" not found (workspace/not-found)`，
+   不创建会话；
 2. 显式 `cwd` → 按路径反查已注册 Workspace：命中 → 自动归组；未命中 → 纯 `cwd`
    创建，输出渲染 `ungrouped`（**不会替你新建 Workspace**，避免污染分组列表）；
 3. 都不传 → 沿用**当前会话**所属的 Workspace；当前会话也不属于任何 Workspace
@@ -138,8 +139,8 @@ render：`message accepted: session <id> (mode: <m>, request: <key>)`。
 ~/.dsh/sessions/<workspace 目录>/<session 目录>/*.jsonl[.zstd]
 ```
 
-- `.jsonl.zstd` 用 Node 原生 `zstdDecompressSync` 一次解码拼接帧；损坏文件按空
-  处理并跳过（审计不失败）；
+- `.jsonl.zstd` 用 Node 原生 zstd（`zstdDecompress`，libuv 线程池异步）一次解码拼接帧；
+  损坏文件按空处理并跳过（审计不失败）；
 - 关心三类事件：`session`（cwd）、`tool/call`（callId→工具名）、`tool/result`
   （`isError === true` 的结果）。
 
@@ -172,6 +173,8 @@ session_error_audit: 12 tool errors across 4 sessions with errors
 
 - 周期性审计错误趋势、验证某类 guardrail 是否真的压下了某类失败；
 - **只读**：不修改任何文件；
+- `~/.dsh/sessions` 缺失或不可读 → 以 `session_error_audit: … (<errno code>)` 的
+  工具错误返回，不裸抛文件系统异常；
 - 有意不返回错误原文（截断 200 字符且只进汇总统计）——要看明细，用 read 翻
   特定会话日志；
 - `~/.dsh/sessions` 不存在时 `readdirSync` 会抛错——本工具假定标准 DSH 安装布局。

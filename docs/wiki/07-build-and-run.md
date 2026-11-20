@@ -5,12 +5,13 @@
 | 项 | 要求 | 说明 |
 |---|---|---|
 | Node.js | `>= 22.19.0`（pack 脚本强制检查） | `engines` 口径；zstd 原生支持 |
-| 类型来源 | 可被 `scripts/build.mjs` 找到的 deps root | DSH checkout / 兄弟插件项目 / `$DSH_NODE_MODULES`；详见 [06 §3](06-dependencies.md) |
+| 类型来源 | 可被 `scripts/build.mjs` 找到的 deps root | `$DSH_NODE_MODULES` / `$DSH_HOME` / `$DSH_CHECKOUT` / gitignored `.dsh-buildrc.json` / 兄弟插件项目；详见 [06 §3](06-dependencies.md) |
 | 本仓库 | **不需要 `npm install`** | 依赖经垫片链接借用 |
 
 > 若所有候选都找不到：`No node_modules with typescript and the @deepseek-ai
 > types found. Point DSH_NODE_MODULES at a node_modules directory (or DSH_HOME
-> at a DSH checkout) and retry.` —— 按报错设置环境变量即可。
+> at a DSH checkout) and retry.` —— 按报错设置 `DSH_NODE_MODULES` / `DSH_HOME` /
+> `DSH_CHECKOUT`，或写 `.dsh-buildrc.json`。
 
 ## 2. 命令速查（package.json scripts）
 
@@ -60,8 +61,8 @@ npx vitest run --config vitest.config.ts   # 任何可用的 vitest 均可
 | 测试文件 | 覆盖 |
 |---|---|
 | `checks.test.ts` | `ownerWorkspace` 三分支；重试账本（窗口/过期清理/异文拒绝/上限）；`promptRequestId` 三来源与非法 token；`hasText`；`describeFailure`（code 保留、非 Error）；`checkedCwd`（相对/存在/缺失/非目录，用 tmpdir 建真实目录）；`providerOfModel`（唯一/未列出含失败 provider/歧义）；`checkedEffort`（提供/不提供列可选项/无清单透传）；`carriedEffort`（无 effort/保留/降级 defaultEffort/无清单透传） |
-| `session-tools.test.ts` | 注册三个工具 + disposer 反注册；`create` 请求体形状（省略 cwd 不塞空字段）、cwd/workspaceId 互斥、相对路径与取消**在调宿主前**拦截、Workspace 三级归组（沿用当前会话/反查/显式 id/不造 Workspace）、模型继承全矩阵（整体抄/同 id 沿用路由/目录反查/歧义与未知模型创建前拒/provider 缺 model/effort 校验与降级/无模型施 effort 被拒/selectModel 失败点名 sessionId）、render 各行；`inject` 请求形状（text 部件数组、mode、键来源）、显式 requestId 重试、异文拒绝、并发合并、串行重试合并、signal 透传、宿主错误带 code |
-| `error-audit.test.ts` | 分类词表与顺序、归因正则、参数默认/钳制/ISO 校验、损坏字节容错 |
+| `session-tools.test.ts` | 注册三个工具 + disposer 反注册；`create` 请求体形状（省略 cwd 不塞空字段）、cwd/workspaceId 互斥、相对路径与取消**在调宿主前**拦截、未知 `workspaceId` 在调宿主前拒绝（不降级为默认会话）、Workspace 三级归组（沿用当前会话/反查/显式 id/不造 Workspace）、模型继承全矩阵（整体抄/同 id 沿用路由/目录反查/歧义与未知模型创建前拒/provider 缺 model/effort 校验与降级/无模型施 effort 被拒/selectModel 失败点名 sessionId）、render 各行；`inject` 请求形状（text 部件数组、mode、键来源）、显式 requestId 重试、异文拒绝、并发合并、串行重试合并、signal 透传、宿主错误带 code |
+| `error-audit.test.ts` | 分类词表与顺序、归因正则、参数默认/钳制/ISO 校验、`decodeSessionLines` 容错与压缩往返、`auditSessions` 目录遍历（损坏文件跳过、`since` 下界） |
 
 ### 编写测试的既定模式
 
@@ -81,13 +82,10 @@ npx vitest run --config vitest.config.ts   # 任何可用的 vitest 均可
 4. **npm pack**：`npm pack --ignore-scripts --pack-destination <OutDir>`；
 5. **tarball 校验**（两份清单）：
    - 必含：`package/package.json`、`package/cordis.patch.yml`、`package/cordis.yml`、
-     `package/dist/index.js`、`package/dist/session-tools.js`、`package/dist/checks.js`；
+     `package/dist/index.js`、`package/dist/session-tools.js`、`package/dist/checks.js`、
+     `package/dist/error-audit.js`；
    - 必不含：`package/(src|tests|scripts|node_modules|release)/…`；
 6. **SHA256**：写 `<OutDir>/SHA256SUMS.txt`，打印安装命令。
-
-> ⚠️ 维护注意：第 5 步必含清单**尚未包含 `dist/error-audit.js`**（v1.4.0 新模块）。
-> tarball 本身不受影响（`files: ["dist"]` 全量携带），但建议补上断言，见
-> [01 §5](01-overview.md)。
 
 ## 6. 安装与升级（部署到 DSH profile）
 
@@ -131,7 +129,7 @@ dsh --profile ast-verify --from-default-profile headless
 | 症状 | 原因 | 处置 |
 |---|---|---|
 | `Cannot find type definition file for 'node'` | scope 目录被整目录链接，pnpm 相对链接断裂 | 重跑 build（脚本已改为逐条目链接；旧垫片会被自动清理重建） |
-| `No node_modules with typescript …` | 找不到可用 deps root | 设 `DSH_NODE_MODULES` 或 `DSH_HOME` |
+| `No node_modules with typescript …` | 找不到可用 deps root | 设 `DSH_NODE_MODULES` / `DSH_HOME` / `DSH_CHECKOUT`，或写 `.dsh-buildrc.json` |
 | `npm test` 报 vitest 缺失/原生绑定崩溃 | 垫片 `.bin` 没建好，或借用的 vitest 跨 OS | 重跑 build（非 Windows 有冒烟探测）；或 `npx vitest run --config vitest.config.ts` |
 | 插件不激活（工具列表里没有 session_*） | profile 缺 `session-controller` 等 inject 依赖行 | 换 `web` profile，或用 patch 补行 |
 | 运行期 `ERR_MODULE_NOT_FOUND: '@deepseek-ai/dsh-tools'` | 以本地目录 `link:` 安装 | 卸载后改装 tarball |
@@ -144,9 +142,9 @@ dsh --profile ast-verify --from-default-profile headless
 1. 改 `package.json` 的 `version`；
 2. `npm run typecheck && npm test && npm run build` 全绿；
 3. `./pack.ps1`（或 `pack.sh`）→ 检查 tarball 条目数与 SHA256SUMS.txt；
-4. 若新增了 `dist/` 模块：**同步更新 pack.* 的必含清单**（当前欠
-   `dist/error-audit.js` 一条）；
-5. 同步 README（当前 README 落后 v1.4.0：仍写"两个工具"）；
+4. 若新增了 `dist/` 模块：**同步更新 pack.* 的必含清单**（当前四项：
+   `index.js` / `session-tools.js` / `checks.js` / `error-audit.js`）；
+5. 同步 README 与 `locale/*.json` 的工具描述；
 6. `dsh plugin remove` + `add` 新 tarball + **重启 Host**；
 7. 现场 smoke：`session_create {}`（应落在当前 Workspace）、
    `session_inject`（queue/steer）、`session_error_audit {}`（应返回有界汇总）。

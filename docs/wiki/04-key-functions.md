@@ -155,72 +155,75 @@
 
 ### 2.5 `joinTarget`
 
-- **位置**：`src/session-tools.ts:174-183`
+- **位置**：`src/session-tools.ts:171-191`
 - **签名**：`joinTarget(ctx, args: { cwd?, workspaceId? }, exec): Promise<Workspace | undefined>`
 - **三级解析**（与 README「工具语义」的落点规则一致）：
 
   | 输入 | 行为 |
   |---|---|
-  | 显式 `workspaceId` | `registry.get(id)` 透传；未知 id 由宿主报 `workspace/not-found` |
+  | 显式 `workspaceId` | `registry.get(id)`；**未知 id（get 返回 undefined）→ 抛 `workspace "…" not found (workspace/not-found)`，不创建会话**——宿主的 `get` 契约是返回 `Workspace \| undefined`，从不抛错，所以这层转换只能在插件做 |
   | 显式 `cwd` | `registry.resolveByPath(checkedCwd(cwd))`：命中 → 用该 Workspace 的 id（自动归组）；未命中 → undefined（纯 cwd 创建，**不替调用方新建 Workspace**） |
   | 两者皆无 | `ownerWorkspace(registry.list(), exec.agent?.id)`：沿用当前会话所属 Workspace；当前会话不在任何 Workspace → undefined |
+- **@throws**：显式命名的 `workspaceId` 未注册——保证未知 id 不会静默降级成
+  默认 cwd 的未归组会话（工具 description 承诺的 "the named Workspace does
+  not exist" 失败由此保持成立）。
 - **为什么存在**：宿主 `create` 只有 `workspaceId` 会把会话挂上 Workspace；只给
   `cwd` 的会话是"未分类"，UI 把它排在所有分组之外。
 
 ### 2.6 `createSessionTool` → 工具 `session_create`
 
-- **位置**：`src/session-tools.ts:185-300`
-- **execute 主流程**（`:242-298`，时序见 [02 §5](02-architecture.md)）：
-  1. 入口取消检查（`:243`）；
-  2. `cwd` × `workspaceId` 互斥（`:244-246`）；
-  3. `await resolveSelection(...)`（`:247`）；
-  4. **解析后取消复查**（`:251`，注释：解析新增了 await 点，取消可能落在原入口
+- **位置**：`src/session-tools.ts:197-312`
+- **execute 主流程**（`:254-310`，时序见 [02 §5](02-architecture.md)）：
+  1. 入口取消检查（`:255`）；
+  2. `cwd` × `workspaceId` 互斥（`:256-258`）；
+  3. `await resolveSelection(...)`（`:259`）；
+  4. **解析后取消复查**（`:263`，注释：解析新增了 await 点，取消可能落在原入口
      检查之后；创建无法中途取消，这是最后一个免费取消点）；
-  5. `await joinTarget(...)`（`:252`）；
-  6. 组装 `SessionCreateRequest`（`:253-256`）：joined → `{workspaceId: joined.id}`；
+  5. `await joinTarget(...)`（`:264`，未知 workspaceId 在此抛错）；
+  6. 组装 `SessionCreateRequest`（`:265-268`）：joined → `{workspaceId: joined.id}`；
      未 joined 但给了 cwd → `{cwd: checkedCwd(args.cwd)}`（再校验一次是幂等的，
-     且保证**省略时不塞空字段**——测试 `session-tools.test.ts:128-134` 断言请求体
-     是 `{}`）；`agentPreset` 有则透传；
-  7. `sessionController.create(request)`，失败走 `describeFailure`（`:258-262`）；
-  8. 位置投影（`:265-267`）：joined 时回显 Workspace 的 `path`（那正是宿主用的
+     且保证**省略时不塞空字段**——`tests/session-tools.test.ts` 的 omit-cwd 用例
+     断言请求体是 `{}`）；`agentPreset` 有则透传；
+  7. `sessionController.create(request)`，失败走 `describeFailure`（`:270-274`）；
+  8. 位置投影（`:277-279`）：joined 时回显 Workspace 的 `path`（那正是宿主用的
      cwd）与 `workspaceId/workspaceTitle`；未 joined 给了 cwd 回显调用值；
-  9. 有选择则 `selectModel(...)`（`:275-289`），回执里的 `selected` 投影进输出；
-     失败则抛**点名已创建会话**的错误（`:290-297`）。
-- **输出 schema**（`:216-229`）：`sessionId`（必填）+ `cwd` / `workspaceId` /
+  9. 有选择则 `selectModel(...)`（`:287-301`），回执里的 `selected` 投影进输出；
+     失败则抛**点名已创建会话**的错误（`:302-309`）。
+- **输出 schema**（`:228-241`）：`sessionId`（必填）+ `cwd` / `workspaceId` /
   `workspaceTitle` / `agentPreset` / `provider` / `model` / `reasoningEffort`（可选），
   `additionalProperties: false`。
-- **render**（`:230-240`）：单行文本，形如
+- **render**（`:242-252`）：单行文本，形如
   `session created: <id> (workspace: DSH, cwd: …) (preset: standard) (model: prov-a/m1, effort: high)`；
   未归组时显式渲染 `(cwd: …|default, ungrouped)`——如实告知"这个会话不在任何分组"。
 
 ### 2.7 `injectSessionTool` → 工具 `session_inject`
 
-- **位置**：`src/session-tools.ts:307-406`
-- **闭包状态**（随注册实例生灭，`:316-324`）：
+- **位置**：`src/session-tools.ts:319-418`
+- **闭包状态**（随注册实例生灭，`:328-336`）：
   - `inFlight: Map<key, { message, result: Promise<InjectReceipt> }>` —— 进行中的
     prompt；同键并发合并，同键异文拒绝；
   - `settled: Map<key, RetryRecord<InjectReceipt>>` —— 完成回执，60 秒窗口、256 上限。
-- **execute 主流程**（`:366-404`，时序见 [02 §6](02-architecture.md)）：
+- **execute 主流程**（`:378-416`，时序见 [02 §6](02-architecture.md)）：
   取消检查 → `hasText` → `promptRequestId` → `lookupRetry`（命中直接返回回执）→
   `inFlight`（异文抛 / 同文 `await started.result`）→ 构造
   `SessionPromptRequest`（`content: [{ type: 'text', text: message }]`——宿主的
   content 是**部件数组**不是字符串）→ `prompt(request, exec.signal)` →
   `rememberRetry` → 返回 receipt；`finally` 中从 `inFlight` 移除。
-- **输出 schema**（`:350-360`）：`accepted` / `sessionId` / `mode` / `requestId`
+- **输出 schema**（`:362-372`）：`accepted` / `sessionId` / `mode` / `requestId`
   全必填。render 单行：`message accepted: session <id> (mode: queue, request: <key>)`。
 
 ## 3. src/error-audit.ts —— 错误审计
 
 ### 3.1 `parseAuditArgs`
 
-- **位置**：`src/error-audit.ts:43-49`
+- **位置**：`src/error-audit.ts:35-42`
 - **职责**：`since` 必须能 `Date.parse`（否则抛 ISO 错误）；`top` 取整后钳制
   1–5，缺省 3；`cwd_contains` 透传。
-- **测试**：`tests/error-audit.test.ts:38-47`。
+- **测试**：`tests/error-audit.test.ts` 的 `parseAuditArgs` 组。
 
 ### 3.2 `classifyErrorText`
 
-- **位置**：`src/error-audit.ts:57-68`
+- **位置**：`src/error-audit.ts:49-60`
 - **职责**：**顺序敏感**的错误分类词表，先具体后通用：
 
   | 顺序 | 判定（substring/regex） | 类别 |
@@ -235,37 +238,38 @@
   | 8 | `missing required property` \| `invalid arguments` | `bad-args` |
   | 9 | `ENOENT` | `enoent` |
   | 10 | 兜底 | `other` |
-- **测试**：`tests/error-audit.test.ts:9-28`（含"具体优先于通用"的顺序断言）。
+- **测试**：`tests/error-audit.test.ts` 的 `classifyErrorText` 组（含"具体优先于通用"的顺序断言）。
 
 ### 3.3 `offenderOf`
 
-- **位置**：`src/error-audit.ts:71-77`
+- **位置**：`src/error-audit.ts:63-69`
 - **职责**：从错误文本提取归因：优先 `in "…"` 与 `(modify|write|edit|read) "…"`
   的引号内容；其次 `command:"…"` 的命令头（10–80 字符）；否则空串。
   汇总时与工具名拼成 `<tool> → <file/command>`（截断 80 字符）。
 
 ### 3.4 `defaultSessionsRoot` / `decodeSessionLines`
 
-- **位置**：`src/error-audit.ts:80-99`
+- **位置**：`src/error-audit.ts:72-96`
 - `defaultSessionsRoot()`：`join(homedir(), '.dsh', 'sessions')` —— 会话存储根。
-- `decodeSessionLines(bytes)`：`zstdDecompressSync` 一次解码**拼接帧**（文件含
-  独立头帧 + 数据帧）；空输入或损坏 → `[]`（跳过该文件，审计不因坏文件失败）。
-  `.jsonl` 直读按 `\n` 切分。
+- `decodeSessionLines(bytes)`：**异步**（`zstdDecompress` 经 promisify，在 libuv
+  线程池上解码，不阻塞宿主事件循环）一次解码**拼接帧**（文件含独立头帧 + 数据帧）；
+  空输入或损坏 → `[]`（跳过该文件，审计不因坏文件失败）。`.jsonl` 直读按 `\n` 切分。
 
 ### 3.5 `auditSessions`
 
-- **位置**：`src/error-audit.ts:109-145`
-- **职责**：三层 `readdirSync(withFileTypes)` 遍历（工作区目录 → 会话目录 →
-  `.jsonl[.zstd]` 文件）；对每个文件 `scanLines` 得到 `{cwd, errors, offenders}`；
+- **位置**：`src/error-audit.ts:104-139`
+- **职责**：三层 `readdir(withFileTypes)` 异步遍历（工作区目录 → 会话目录 →
+  `.jsonl[.zstd]` 文件），文件读取走 `readFile` 异步 API、zstd 走线程池——重活
+  都不在主线程；对每个文件 `scanLines` 得到 `{cwd, errors, offenders}`；
   聚合 `categories`（类别计数）、`perSession`（按 cwd 或会话目录名计数）、
   `offenders`；最后 `renderSummary`。
 - **过滤**：`since` 下界在 `scanLines` 内按事件 `time` 判；`cwd_contains` 在文件
   级结果上判。
-- **有界性**：内存平坦（错误文本抽取即截断），只返回 summary。
+- **有界性**：逐文件顺序处理、错误文本抽取即截断，只返回 summary。
 
 ### 3.6 `scanLines`（内部）
 
-- **位置**：`src/error-audit.ts:148-186`
+- **位置**：`src/error-audit.ts:143-180`
 - **事件处理**：
   | 事件 | 字段 | 动作 |
   |---|---|---|
@@ -276,7 +280,7 @@
 
 ### 3.7 `renderSummary`（内部）
 
-- **位置**：`src/error-audit.ts:208-227`
+- **位置**：`src/error-audit.ts:203-222`
 - **输出形状**（有界 ~40 行）：
   ```
   session_error_audit: <total> tool errors across <scanned> sessions with errors
@@ -287,13 +291,15 @@
   — top offenders (tool → file/command) —
   <计数>  <tool → file>          （top 行）
   ```
-- `topEntries`（`:200-202`）：计数降序、键 `localeCompare` 升序——**确定性输出**。
+- `topEntries`（`:195-197`）：计数降序、键 `localeCompare` 升序——**确定性输出**。
 
 ### 3.8 `auditSessionTool`
 
-- **位置**：`src/error-audit.ts:237-263`
+- **位置**：`src/error-audit.ts:232-265`
 - 参数：`since`（可选 ISO 8601）、`cwd_contains`（可选子串）、`top`（默认 3，钳 1–5）。
 - 输出：`{ summary: string }`（必填），render 原样输出 summary 文本。
+- `execute` 经 `describeFailure` 包装文件系统错误——`~/.dsh/sessions` 缺失或不可读
+  时返回带工具前缀的错误（如 `(ENOENT)`），不裸抛异常。
 - `ctx` 未使用（`void ctx`），保留参数以与兄弟工具签名对齐。
 
 ## 4. src/index.ts
