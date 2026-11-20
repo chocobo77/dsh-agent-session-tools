@@ -125,7 +125,7 @@ for (const sha of shas) {
   for (const line of raw) {
     const m = line.match(/^:(\d{6}) (\d{6}) ([0-9a-f]{40}) ([0-9a-f]{40}) ([A-Z])\t(.+)$/)
     if (!m) throw new Error('unparsed diff-tree line: ' + line)
-    const [, srcMode, , , newSha, status, p] = m
+    const [, srcMode, newMode, , newSha, status, p] = m
     if (status === 'D' || /^0+$/.test(newSha)) {
       // 删除条目要带**旧 mode**：GitHub 文档的删除写法是 sha:null 配文件原有 mode；
       // 删除行的新 mode 是 000000，不在合法 mode 集里，会被 trees 端点 422 拒掉。
