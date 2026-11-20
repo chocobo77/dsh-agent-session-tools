@@ -59,6 +59,26 @@ export function classifyErrorText(text: string): string {
   return 'other'
 }
 
+/**
+ * A pre-execute guard denial (dsh-search-path-guard) also reaches the log as
+ * an `isError` tool result — the pipeline turns a `deny` into an `Error:`
+ * result — but the tool NEVER RAN: it is a prevented failure, not a tool
+ * failure. Conflating the two makes the audit penalize the very guardrails it
+ * exists to measure ("verify that guardrails reduced a failure category"),
+ * since every prevented failure would otherwise land in the categories it is
+ * supposed to shrink. The anchors mirror that plugin's denial wording — a
+ * cross-package text contract, same style as its zero-result marker.
+ * @param text - the error text (already truncated).
+ * @returns true when the text is a guard denial rather than a tool error.
+ */
+export function isGuardDenial(text: string): boolean {
+  return text.includes('loop-guard:')
+    || text.includes('edit blocked:')
+    || text.includes(' search failed: path "')
+    || text.includes(' failed: file "')
+    || text.includes('read_image only accepts')
+}
+
 /** Extract one short human attribution from an error text: the target file or command head. */
 export function offenderOf(text: string): string {
   const quoted = /in "([^"]+)"/u.exec(text) ?? /(?:modify|write|edit|read) "([^"]+)"/u.exec(text)
@@ -107,6 +127,7 @@ export async function auditSessions(root: string, input: ErrorAuditInput): Promi
   const perSession = new Map<string, { cwd: string; count: number }>()
   const offenders = new Map<string, number>()
   let total = 0
+  let denials = 0
   let scanned = 0
   for (const workspace of await readdir(root, { withFileTypes: true })) {
     if (!workspace.isDirectory()) continue
@@ -120,31 +141,49 @@ export async function auditSessions(root: string, input: ErrorAuditInput): Promi
         const lines = file.endsWith('.jsonl.zstd') ? await decodeSessionLines(bytes) : bytes.toString('utf8').split('\n')
         const record = scanLines(lines, sinceMs)
         if (record === undefined) continue
-        scanned += 1
         if (input.cwdContains !== undefined && !record.cwd.includes(input.cwdContains)) continue
+        // The header's denominator is SESSIONS WITH ERRORS: guard-only sessions
+        // contribute denials but must not inflate it or the worst-sessions list,
+        // and cwd-filtered sessions must not inflate it either (the `scanned`
+        // line used to sit before the filter).
+        if (record.errors.length > 0) {
+          scanned += 1
+          const sessionKey = record.cwd === '?' ? session.name : record.cwd
+          const bucket = perSession.get(sessionKey) ?? { cwd: sessionKey, count: 0 }
+          bucket.count += record.errors.length
+          perSession.set(sessionKey, bucket)
+        }
         total += record.errors.length
-        const sessionKey = record.cwd === '?' ? session.name : record.cwd
-        const bucket = perSession.get(sessionKey) ?? { cwd: sessionKey, count: 0 }
-        bucket.count += record.errors.length
-        perSession.set(sessionKey, bucket)
+        denials += record.denials
         for (const error of record.errors) {
           categories.set(error, (categories.get(error) ?? 0) + 1)
         }
+        if (record.denials > 0) categories.set('guard-denied', (categories.get('guard-denied') ?? 0) + record.denials)
         for (const offender of record.offenders) {
           offenders.set(offender, (offenders.get(offender) ?? 0) + 1)
         }
       }
     }
   }
-  return renderSummary(total, scanned, categories, perSession, offenders, input.top)
+  return renderSummary(total, scanned, denials, categories, perSession, offenders, input.top)
 }
 
-/** Scan one decoded log: cwd, tool names per call id, and the error records. */
-function scanLines(lines: readonly string[], sinceMs: number): { cwd: string; errors: readonly string[]; offenders: readonly string[] } | undefined {
+/**
+ * Scan one decoded log: cwd, tool names per call id, the tool-error records,
+ * and the guard-denial count. One counted error per call id: the durable log
+ * is append-only, and the replace mechanism (infinite-context's tool archive,
+ * the host tool-result pruner) appends a SHADOW row (`surfaceOp: replace`)
+ * carrying the same message — a naive line scan counts the same failure once
+ * per row, inflating exactly the long archived sessions the audit is meant to
+ * study. First row wins, which is also the un-pruned original text.
+ */
+function scanLines(lines: readonly string[], sinceMs: number): { cwd: string; errors: readonly string[]; offenders: readonly string[]; denials: number } | undefined {
   let cwd = '?'
   const callNames = new Map<string, string>()
+  const counted = new Set<string>()
   const errors: string[] = []
   const offenders: string[] = []
+  let denials = 0
   for (const line of lines) {
     if (line.length === 0) continue
     let event: Record<string, unknown>
@@ -167,9 +206,20 @@ function scanLines(lines: readonly string[], sinceMs: number): { cwd: string; er
       case 'tool/result': {
         const message = (data.message ?? {}) as Record<string, unknown>
         if (message.isError !== true || time < sinceMs) break
+        const callId = typeof message.toolCallId === 'string' ? message.toolCallId : ''
+        if (callId.length > 0) {
+          if (counted.has(callId)) break // shadow/replace row of a counted result
+          counted.add(callId)
+        }
         const text = plainText((message.content ?? []) as unknown[]).slice(0, 200)
-        errors.push(classifyErrorText(text))
-        const name = callNames.get(typeof message.toolCallId === 'string' ? message.toolCallId : '') ?? '?'
+        if (isGuardDenial(text)) {
+          denials += 1
+        } else {
+          errors.push(classifyErrorText(text))
+        }
+        // The offender attribution is useful for denials too: it shows where
+        // the guard keeps blocking the model, which is the prevention signal.
+        const name = callNames.get(callId) ?? '?'
         const offender = offenderOf(text)
         offenders.push(`${name}${offender.length > 0 ? ` → ${offender.slice(0, 80)}` : ''}`)
         break
@@ -177,7 +227,7 @@ function scanLines(lines: readonly string[], sinceMs: number): { cwd: string; er
       default: break
     }
   }
-  return errors.length > 0 ? { cwd, errors, offenders } : undefined
+  return errors.length > 0 || denials > 0 ? { cwd, errors, offenders, denials } : undefined
 }
 
 /** Concatenate the text parts of one LLM content array. */
@@ -203,13 +253,18 @@ function topEntries<K>(map: Map<K, number>, limit: number): readonly (readonly [
 function renderSummary(
   total: number,
   scanned: number,
+  denials: number,
   categories: Map<string, number>,
   perSession: Map<string, { cwd: string; count: number }>,
   offenders: Map<string, number>,
   top: number,
 ): string {
   const lines: string[] = []
-  lines.push(`session_error_audit: ${total} tool errors across ${scanned} sessions with errors`)
+  // Guard denials are PREVENTED failures: kept out of the tool-error total
+  // (which feeds worst-sessions and the trend the audit exists to measure)
+  // but shown so prevention is visible, not silently dropped.
+  lines.push(`session_error_audit: ${total} tool errors across ${scanned} sessions with errors`
+    + (denials > 0 ? ` (${denials} pre-guard denial(s) counted separately, not as tool errors)` : ''))
   lines.push('— categories —')
   for (const [category, count] of topEntries(categories, 10)) lines.push(`${String(count).padStart(4)}  ${category}`)
   lines.push('— worst sessions —')
@@ -233,7 +288,7 @@ export function auditSessionTool(ctx: Context): ReturnType<typeof defineTool> {
   void ctx
   return defineTool({
     name: 'session_error_audit',
-    description: 'Summarize recurring tool-call and edit errors across persisted DSH sessions. Returns a bounded summary only (category counts, worst sessions, top offender files/commands, ~40 lines); session detail stays on disk — page a specific session with read if needed. Use it to audit error trends or verify that guardrails reduced a failure category.',
+    description: 'Summarize recurring tool-call and edit errors across persisted DSH sessions. Returns a bounded summary only (category counts, worst sessions, top offender files/commands, ~40 lines); session detail stays on disk — page a specific session with read if needed. Duplicate rows of one archived result are counted once; pre-execute guard denials are reported under guard-denied, separate from tool-error totals. Use it to audit error trends or verify that guardrails reduced a failure category.',
     parameters: {
       since: { type: 'string', description: 'Optional ISO 8601 lower bound on error time.' },
       cwd_contains: { type: 'string', description: 'Optional substring filter on the session working directory.' },
