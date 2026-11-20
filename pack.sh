@@ -116,15 +116,19 @@ echo "    entries: $(wc -l <<< "$entries")"
 # ── SHA256 ───────────────────────────────────────────────────────────────────
 # Three hash paths, probed rather than tried: MSYS bash ships neither sha256sum
 # nor openssl on every install, and under `set -o pipefail` a missing first
-# choice would abort the script instead of falling through. node is required by
-# this project anyway, so it is the last and always-available option.
+# choice would abort the script instead of falling through. A command can also
+# EXIST and fail (old openssl without `-r` support) — every failing path is
+# treated as empty and falls through. node is required by this project anyway,
+# so it is the last and always-available option.
 hash=""
 if command -v sha256sum >/dev/null 2>&1; then
-  hash="$(sha256sum "$tgz" | awk '{print $1}')"
-elif command -v openssl >/dev/null 2>&1; then
-  hash="$(openssl dgst -sha256 -r "$tgz" | cut -d' ' -f1)"
-else
-  hash="$(node -e 'const c=require("crypto"),f=require("fs");console.log(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$tgz")"
+  hash="$(sha256sum "$tgz" | awk '{print $1}')" || hash=""
+fi
+if [ -z "$hash" ] && command -v openssl >/dev/null 2>&1; then
+  hash="$(openssl dgst -sha256 -r "$tgz" | cut -d' ' -f1)" || hash=""
+fi
+if [ -z "$hash" ]; then
+  hash="$(node -e 'const c=require("crypto"),f=require("fs");console.log(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"))' "$tgz")" || hash=""
 fi
 if [ -z "$hash" ]; then
   echo "无法计算 sha256（sha256sum / openssl / node 都不可用）" >&2
