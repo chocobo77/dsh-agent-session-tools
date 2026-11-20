@@ -163,6 +163,38 @@ describe('auditSessions', () => {
     }
   })
 
+  it('an out-of-window original also silences its in-window archived stub', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ast-audit-dedup-window-'))
+    try {
+      const sessionDir = join(root, 'ws-1', 'session-abc')
+      mkdirSync(sessionDir, { recursive: true })
+      const log = [
+        JSON.stringify({ type: 'session', cwd: '/demo' }),
+        JSON.stringify({ type: 'tool/call', data: { callId: 'c1', name: 'read' } }),
+        // the real failure predates the `since` window
+        JSON.stringify({
+          type: 'tool/result',
+          time: 1_000,
+          data: { message: { isError: true, toolCallId: 'c1', content: [{ type: 'text', text: 'code run failed (timeout): execution deadline reached (60000ms)' }] } },
+        }),
+        // the archive/prune shadow row lands INSIDE the window; without
+        // window-independent registration its "[archived …]" stub counted as
+        // a fresh error classified 'other'
+        JSON.stringify({
+          type: 'tool/result',
+          time: 2_000,
+          surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 },
+          data: { message: { isError: true, toolCallId: 'c1', content: [{ type: 'text', text: '[archived 2000 chars]' }] } },
+        }),
+      ].join('\n')
+      writeFileSync(join(sessionDir, 'log.jsonl'), log)
+      const args = parseAuditArgs({ since: '1970-01-01T00:00:01.500Z' })
+      expect(await auditSessions(root, args)).toContain('0 tool errors across 0 sessions with errors')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('reports pre-guard denials separately from tool errors', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ast-audit-guard-'))
     try {

@@ -205,12 +205,16 @@ function scanLines(lines: readonly string[], sinceMs: number): { cwd: string; er
       }
       case 'tool/result': {
         const message = (data.message ?? {}) as Record<string, unknown>
-        if (message.isError !== true || time < sinceMs) break
+        if (message.isError !== true) break
+        // Dedup registers the call id even outside the time window: a row that
+        // predates the window must also silence its later archived shadow stub,
+        // or the stub's "[archived …]" text would count as a fresh in-window error.
         const callId = typeof message.toolCallId === 'string' ? message.toolCallId : ''
         if (callId.length > 0) {
           if (counted.has(callId)) break // shadow/replace row of a counted result
           counted.add(callId)
         }
+        if (time < sinceMs) break
         const text = plainText((message.content ?? []) as unknown[]).slice(0, 200)
         if (isGuardDenial(text)) {
           denials += 1
